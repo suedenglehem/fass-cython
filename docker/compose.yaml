@@ -1,0 +1,133 @@
+# fass deployment (public). The image boris271142/fass (Docker Hub) is
+# prebuilt — compiled, FFmpeg 9 + NVIDIA acceleration — there is nothing
+# to build on this machine:
+#
+#   ../setup.sh                    # one-time: folders, LLM, GPU, ports
+#   ../scripts/web.sh start        # up the stack  →  http://<host>:8000
+#
+# The stack is three containers:
+#   fass         fass itself — web UI + JSON API on :8000, GPU
+#   fass-worker  the Apply sidecar (same image, `worker --port 8001`)
+#   fass-http    Apache sidecar serving the http-destined HLS/DASH runs
+#
+# The web UI's Apply button recreates the fass container via the
+# fass-worker sidecar (same image, different command). For it to work:
+#   - the docker socket must be mounted on BOTH services (uncommented
+#     below), with FASS_DOCKER_MANAGE=1
+#   - FASS_DOCKER_WORKER points fass at the sidecar (compose service DNS)
+# The sidecar stops fass, creates+starts the replacement, and records the
+# outcome in /config/last-apply.json (shared volume), which the UI reads.
+# Stream port mappings below must mirror the Config tab's port list.
+#
+# RAG: the published image ships WITHOUT a RAG sidecar. The fass-side RAG
+# client is fail-open: without the service the evidence status reads
+# "unavailable" and generation works evidence-less, never blocked.
+
+# fass-http: the Apache sidecar serving the http-destined streams. The
+# WHOLE output volume is mounted read-only at its htdocs root, so a run
+# that writes {output}/http/<run-id>/stream.m3u8 is served at
+# /http/<run-id>/stream.m3u8 — GET /v1/streams lists those URLs. The
+# per-run subdirs are the DASH/HLS segment-name collision fix (the muxer
+# names segments independent of the playlist file). The Config tab's
+# Apply recreates fass ONLY — fass-http is owned by the host-side
+# `compose up` (../scripts/web.sh start|restart).
+
+services:
+  fass:
+    image: boris271142/fass:latest
+    container_name: fass
+    ports:
+      - "8000:8000"
+      # --- stream ports: "host:container/proto", one per Config-tab mapping.
+      # Receive (camera in):  the camera pushes to <this host's IP>:5000
+      #   and the command uses udp://host:5000
+      # Send (pull out):      the command uses srt://host:9000/stream
+      # - "5000:5000/udp"
+      # - "9000:9000/tcp"
+    volumes:
+      # Host folders come from docker/.env (written by ../setup.sh,
+      # re-synced from config.json by scripts/web.sh — the Config tab
+      # owns them after install). Defaults are repo-relative, resolved
+      # against this file's directory.
+      - ${FASS_INPUT_DIR:-../media/input}:/input
+      - ${FASS_OUTPUT_DIR:-../media/output}:/output
+      - ${FASS_LOG_DIR:-../media/log}:/log
+      - ${FASS_CONFIG_DIR:-../docker-data/config}:/config
+      # Config-tab Apply button (container self-management):
+      - /var/run/docker.sock:/var/run/docker.sock
+    extra_hosts:
+      # Remote volume mappings (Config -> Volumes -> *_remote) reaching
+      # on-host stores (MinIO/FTP/SFTP) use host.docker.internal; the
+      # docker bridge's 172.17.0.1 is not the right gateway on every
+      # host, so the name is the portable spelling. The Config-tab Apply
+      # (dockerctl.recreate) carries it through too.
+      - host.docker.internal:host-gateway
+    environment:
+      - FASS_ALLOW_EXECUTE=1
+      - FASS_CONFIG=/config/config.json
+      - FASS_RUN_DIR=/log/runs
+      - FASS_CONTAINER_NAME=fass
+      - FASS_DOCKER_WORKER=fass-worker:8001
+      - FASS_DOCKER_MANAGE=1
+      # GPU answer from setup.sh (docker/.env): 0 = no GPU on this
+      # machine — GPU-involved commands generate but execution is
+      # refused (fass/gpu.py); 1 = probe nvidia-smi in the container
+      - FASS_GPU_PROBE=${FASS_GPU:-1}
+      # Which of the exposed cards ffmpeg encodes on, as the IN-CONTAINER
+      # index (docker/.env FASS_GPU_CVD, written by setup.sh). The
+      # exposure list is always ["0"] or ["0","N"], and devices keep their
+      # list position as in-container index (verified 2026-11-06: exposure
+      # ["0","2"] presents the host's GPU 2 as in-container GPU 1, and
+      # CVD=2 fails there), so setup.sh writes 0 for pin 0 and 1 for any
+      # non-zero pin — the raw host index N is NOT a valid value here.
+      - CUDA_VISIBLE_DEVICES=${FASS_GPU_CVD:-0}
+    # The GPU device reservation is NOT in this file — docker compose
+    # (v5.5) merges `devices` lists ADDITIVELY across files and cannot
+    # remove a reservation via an overlay, so the reservation lives in
+    # the machine-local docker/compose.local.yaml that setup.sh writes:
+    # device_ids ["0"] on a single-GPU host / pin 0, ["0","N"] for a
+    # non-zero pin N (a container whose ONLY exposed device sits at a
+    # non-zero host index breaks NVENC — OpenEncodeSessionEx "unsupported
+    # device", reproduced 2026-11-06 on driver 610.43.03 + ffmpeg 9 —
+    # while FASS_GPU_CVD above, 0 for pin 0 and 1 for any other pin, keeps
+    # ffmpeg on the one card), and NO file on a no-GPU host (which is
+    # what lets `up` work there). scripts/web.sh adds the file to every
+    # compose command when present. A GPU host that skips setup.sh runs
+    # CPU-only until the overlay exists (FASS_GPU_PROBE then simply finds
+    # no devices).
+    restart: unless-stopped
+
+  fass-worker:
+    # The Apply sidecar: owns the container swap (a container cannot
+    # recreate itself — see docker/README.md). Same image, no GPU.
+    image: boris271142/fass:latest
+    container_name: fass-worker
+    command: ["worker", "--port", "8001"]
+    volumes:
+      - ${FASS_CONFIG_DIR:-../docker-data/config}:/config
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - FASS_CONTAINER_NAME=fass
+      - FASS_DOCKER_MANAGE=1
+      - FASS_CONFIG=/config/config.json
+    restart: unless-stopped
+
+  fass-http:
+    # Apache sidecar: static server for the http-destined streams (see
+    # the file header). Read-only mount of the WHOLE output dir at the
+    # htdocs root, so /http/<run-id>/x.m3u8 URLs map 1:1 onto the files.
+    # Host port: the setup.sh prompt (FASS_HTTP_PORT in docker/.env),
+    # default 8080 — fass owns 8000.
+    image: httpd:2.4-alpine
+    container_name: fass-http
+    # The stock httpd.conf includes NO conf/extra glob (its httpd-*.conf
+    # Includes are all commented out), so the header conf below is pulled in
+    # explicitly via httpd's -c directive (httpd-foreground = httpd -DFOREGROUND).
+    command: ["httpd-foreground", "-c", "Include conf/extra/httpd-fass.conf"]
+    ports:
+      - "${FASS_HTTP_PORT:-8080}:80"
+    volumes:
+      - ${FASS_OUTPUT_DIR:-../media/output}:/usr/local/apache2/htdocs:ro
+      # Player-tab headers (CORS on stream files, no-cache on playlists):
+      - ${FASS_HTTP_CORS_CONF:-./fass-http/httpd-fass.conf}:/usr/local/apache2/conf/extra/httpd-fass.conf:ro
+    restart: unless-stopped

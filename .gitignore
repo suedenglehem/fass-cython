@@ -1,0 +1,12 @@
+# machine-local deployment state (written by setup.sh / scripts/web.sh)
+docker/.env
+docker/compose.local.yaml
+
+# default host folders (created by setup.sh)
+media/
+docker-data/
+
+# local tooling / python noise
+.ladd
+__pycache__/
+*.pyc
