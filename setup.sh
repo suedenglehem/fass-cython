@@ -47,6 +47,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/docker" && pwd)"
 REPO="$(dirname "$DIR")"
 IMAGE="boris271142/fass:latest"
+RAG_IMAGE="boris271142/fass-rag:latest"
 
 INPUT="${FASS_INPUT_DIR:-$REPO/media/input}"
 OUTPUT="${FASS_OUTPUT_DIR:-$REPO/media/output}"
@@ -299,6 +300,8 @@ PYEOF
 
 echo "pulling $IMAGE (large — the first install takes a while)"
 docker pull "$IMAGE"
+echo "pulling $RAG_IMAGE (RAG sidecar)"
+docker pull "$RAG_IMAGE"
 
 COMPOSE=(docker compose -f "$DIR/compose.yaml")
 [[ -f "$DIR/compose.local.yaml" ]] && COMPOSE+=(-f "$DIR/compose.local.yaml")

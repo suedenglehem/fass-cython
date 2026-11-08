@@ -240,8 +240,8 @@ warnings, and one card per chunk — title (linking into the pinned
 manual), component type·name, option-name badges, score, and the chunk
 text. The Config tab shows the service's status; a down service degrades
 generation (fail-open), it never breaks it. In the published Docker
-deployment the service is not part of the stack, so its status reads
-**unavailable** there — generation still works, evidence-less.
+deployment the `fass-rag` sidecar is part of the stack (internal,
+not port-published).
 
 ### Config tab — deployment settings
 
@@ -568,9 +568,11 @@ command order, as a standalone analysis:
 
 The published image `boris271142/fass` (Docker Hub): fass compiled with
 Cython, FFmpeg 9.0 + NVIDIA hardware acceleration
-(`jrottenberg/ffmpeg:9.0-nvidia2404` base). Three containers — `fass`,
-the `fass-worker` Apply sidecar, and the `fass-http` Apache sidecar for
-HLS/DASH stream runs — up with one script:
+(`jrottenberg/ffmpeg:9.0-nvidia2404` base), plus the
+`boris271142/fass-rag` retrieval image. Four containers — `fass`, the
+`fass-worker` Apply sidecar, the `fass-rag` lexical RAG retriever
+(corpus index baked into its image, no volume), and the `fass-http`
+Apache sidecar for HLS/DASH stream runs — up with one script:
 
 ```bash
 ./setup.sh                  # interactive: folders, LLM endpoint, ports, GPU

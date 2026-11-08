@@ -10,8 +10,8 @@
 #   ./scripts/web.sh status     # containers + healthz
 #   ./scripts/web.sh logs [N]   # last N lines of fass (default 100)
 #
-# The image is boris271142/fass (Docker Hub) — there is nothing to build
-# locally; `pull` is the upgrade path.
+# The images are boris271142/fass + boris271142/fass-rag (Docker Hub) —
+# there is nothing to build locally; `pull` is the upgrade path.
 #
 # After install (../setup.sh) the Config tab owns the volume paths: this
 # script re-syncs docker/.env from <config>/config.json before every
@@ -26,6 +26,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$REPO/docker"
 IMAGE="boris271142/fass:latest"
+RAG_IMAGE="boris271142/fass-rag:latest"
 COMPOSE=(docker compose -f "$DIR/compose.yaml")
 # setup.sh writes compose.local.yaml on a GPU machine (the nvidia device
 # reservation — the base file carries none, see its comment); no-GPU
@@ -118,6 +119,8 @@ case "$cmd" in
   pull)
     echo "pulling $IMAGE"
     docker pull "$IMAGE"
+    echo "pulling $RAG_IMAGE"
+    docker pull "$RAG_IMAGE"
     sync_env
     "${COMPOSE[@]}" up -d
     wait_healthy

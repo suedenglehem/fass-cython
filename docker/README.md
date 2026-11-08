@@ -2,9 +2,11 @@
 
 The published image **`boris271142/fass`** (Docker Hub): fass compiled
 with Cython, packaged together with FFmpeg 9.0 + NVIDIA hardware
-acceleration (base `jrottenberg/ffmpeg:9.0-nvidia2404`). The stack is
-three containers — `fass` (web UI + API, GPU), `fass-worker` (the Apply
-sidecar, same image), and `fass-http` (the Apache sidecar serving the
+acceleration (base `jrottenberg/ffmpeg:9.0-nvidia2404`), plus the
+**`boris271142/fass-rag`** retrieval image. The stack is four
+containers — `fass` (web UI + API, GPU), `fass-worker` (the Apply
+sidecar, same image), `fass-rag` (the lexical RAG retriever, see
+[RAG](#rag)), and `fass-http` (the Apache sidecar serving the
 http-destined HLS/DASH runs). The web UI gets a **Config tab** that
 defines the whole deployment: host-folder mappings for `/input`,
 `/output`, `/log`, stream port mappings, GPU, and the LLM provider. The
@@ -232,15 +234,19 @@ in the image):
 The socket grant means each of these containers can manage *any* container
 on the host — only run the stack where you accept that.
 
-## RAG (not shipped in the public image)
+## RAG
 
 The fass UI has a **RAG tab** — a direct query box for the retrieval
-service that backs the **RAG evidence** on ready results. The public
-image ships **without** a RAG sidecar, so in this deployment the service
-status reads **unavailable**: ready results carry no RAG evidence and the
-query box reports the service down. Generation is unaffected — the
-fass-side RAG client is fail-open: a missing service degrades generation
-to evidence-less, it never blocks it.
+service that backs the **RAG evidence** on ready results. The
+**`fass-rag`** sidecar (image `boris271142/fass-rag`) is part of the
+default stack: a CPU-only, non-root container with no device
+passthrough and no host socket. Its corpus index is baked into the
+image at build time — no volume, no first-boot build — and the port
+(8100) is not published: only `fass` talks to it, via compose DNS
+(`FASS_RAG_ENABLED=1`, `FASS_RAG_URL=http://fass-rag:8100`).
+Generation is unaffected even if the service is down — the fass-side
+RAG client is fail-open: a missing service degrades generation to
+evidence-less, it never blocks it.
 
 ## Tee multi-output
 
@@ -341,7 +347,7 @@ every non-volume line, so `FASS_HTTP_PORT` (like `FASS_GPU`) survives.
 | config file | `./.fass-config.json` | `/config/config.json` (seeded) |
 | volumes | cwd / local paths | `/input` `/output` `/log` mounts |
 | FFmpeg | whatever is on PATH | 9.0 + nvenc, in the image |
-| RAG | off (code default) | off (no sidecar shipped) |
+| RAG | off (code default) | on (`fass-rag` sidecar, `FASS_RAG_ENABLED=1`) |
 
 Both run the same compiled code; the difference is environment, not code
 paths.

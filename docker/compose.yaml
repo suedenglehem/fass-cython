@@ -5,9 +5,10 @@
 #   ../setup.sh                    # one-time: folders, LLM, GPU, ports
 #   ../scripts/web.sh start        # up the stack  →  http://<host>:8000
 #
-# The stack is three containers:
+# The stack is four containers:
 #   fass         fass itself — web UI + JSON API on :8000, GPU
 #   fass-worker  the Apply sidecar (same image, `worker --port 8001`)
+#   fass-rag     lexical RAG retriever (boris271142/fass-rag), internal :8100
 #   fass-http    Apache sidecar serving the http-destined HLS/DASH runs
 #
 # The web UI's Apply button recreates the fass container via the
@@ -19,9 +20,11 @@
 # outcome in /config/last-apply.json (shared volume), which the UI reads.
 # Stream port mappings below must mirror the Config tab's port list.
 #
-# RAG: the published image ships WITHOUT a RAG sidecar. The fass-side RAG
-# client is fail-open: without the service the evidence status reads
-# "unavailable" and generation works evidence-less, never blocked.
+# RAG: the fass-rag sidecar (boris271142/fass-rag) is part of the default
+# stack. Its corpus index is baked into the image at build time, so it
+# needs NO volume and starts serving immediately. The fass-side RAG client
+# is fail-open: a dead fass-rag degrades generation to evidence-less,
+# never blocks it.
 
 # fass-http: the Apache sidecar serving the http-destined streams. The
 # WHOLE output volume is mounted read-only at its htdocs root, so a run
@@ -69,6 +72,10 @@ services:
       - FASS_CONTAINER_NAME=fass
       - FASS_DOCKER_WORKER=fass-worker:8001
       - FASS_DOCKER_MANAGE=1
+      # RAG active by default: the fass-rag service below answers on the
+      # compose network; the client is fail-open if it is down.
+      - FASS_RAG_ENABLED=1
+      - FASS_RAG_URL=http://fass-rag:8100
       # GPU answer from setup.sh (docker/.env): 0 = no GPU on this
       # machine — GPU-involved commands generate but execution is
       # refused (fass/gpu.py); 1 = probe nvidia-smi in the container
@@ -110,6 +117,21 @@ services:
       - FASS_CONTAINER_NAME=fass
       - FASS_DOCKER_MANAGE=1
       - FASS_CONFIG=/config/config.json
+    restart: unless-stopped
+
+  fass-rag:
+    # Lexical RAG retriever over the pinned FFmpeg docs. CPU-only,
+    # non-root, no device passthrough, no host socket. The corpus index
+    # is baked into the image (published as boris271142/fass-rag), so NO
+    # volume is mounted: the service starts serving with its index
+    # already present. Not port-published — only fass talks to it, via
+    # compose DNS.
+    image: boris271142/fass-rag:latest
+    container_name: fass-rag
+    environment:
+      - FASS_RAG_DATA=/data
+      - FASS_RAG_BIND=0.0.0.0:8100
+    healthcheck: { test: ["CMD", "rag-health"], interval: 30s }
     restart: unless-stopped
 
   fass-http:
