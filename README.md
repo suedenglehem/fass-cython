@@ -57,6 +57,32 @@ Every request returns one of four structured outcomes — `ready`,
 `needs_clarification`, `unsupported`, `error`. Ambiguity is a first-class
 answer, never a silent partial plan.
 
+## No LLM required — the rules adapter
+
+fass works fully **without any LLM** — no API key, no endpoint, no
+network beyond the deployment itself. The adapter resolves as:
+`rules` — always the deterministic parser; `llm` — the LLM only (an
+error if no provider is configured); `auto` (the default everywhere —
+CLI, API, UI) — **the LLM only when a provider is configured**
+(Config tab or env vars), the rules otherwise.
+
+What the rules are: a hand-written, deterministic parser — a curated
+catalog of the phrasings fass supports (every feature in
+[What it understands](#what-it-understands): trims, resizes, watermarks,
+transcodes, GPU filters, combiners, quality comparisons, …), each
+mapped onto the same strict, schema-bound edit plan the LLM would
+produce. There is no model in the loop: the same instruction yields the
+same plan, on every machine, every run, and the parser needs no
+network. Ambiguity is still an explicit `needs_clarification`, never a
+silent partial plan.
+
+The LLM is an optional layer on top, not a dependency. Where it adds
+value: tolerance for phrasings outside the rules' catalog, and a
+post-build review of the generated command (fail-open — an unreachable
+LLM never blocks a generation). Everything else — planner, argv
+builder, validation gate — is deterministic either way: the model only
+ever *plans*; it never writes shell.
+
 ## Web UI
 
 `fass serve` (or the docker image) puts a single-page web UI at the
@@ -85,7 +111,8 @@ The workhorse: a natural-language request in, a validated command out.
   processings — the next command picks it up by bare name.
 - **Watermark image** — a logo file; further logos go in as extra image
   inputs.
-- **Adapter** — `auto` (rules first, LLM fallback), `rules`, or `llm`.
+- **Adapter** — `auto` (the LLM only when a provider is configured,
+  the rules otherwise), `rules`, or `llm`.
 - **Additional inputs** — one row per extra input: a file (or stream
   URL), a kind selector (`auto` / `video` / `audio` / `image` /
   `source`), and a remove button; **"+ add input"** appends the next
@@ -338,8 +365,9 @@ fass examples                               # supported-feature summary + exampl
 - **--watermark IMAGE** — a logo to burn in
 - **--asset id=path** or **--asset id=kind:path** (repeatable; kind
   `video` | `audio` | `image` | `source`) — extra typed inputs
-- **--adapter {auto,rules,llm}** — default `auto` (rules first, LLM
-  fallback)
+- **--adapter {auto,rules,llm}** — default `auto` (the LLM only when a
+  provider is configured, the rules otherwise — see [No LLM
+  required](#no-llm-required--the-rules-adapter))
 - **--previous PLAN.json** — revision: only what the new instruction
   changes changes
 - **--metadata FILE** — pre-collected ffprobe JSON for the input (skip
@@ -369,6 +397,96 @@ fass examples                               # supported-feature summary + exampl
   "output"?, "adapter"?, "execute"?}` — asset paths are relative to
   `assets_dir` (default: the case file's directory); implies `--json`
 - **--version**
+
+## HTTP API
+
+`fass serve` is a JSON API (FastAPI), and the web UI is just one of its
+clients. Every domain outcome is a structured **200** with a
+`status` — `ready`, `needs_clarification`, `unsupported`, `error`
+(`cancelled` when an in-flight generation is aborted); 4xx is reserved
+for malformed requests.
+
+**1 · Generate** — `POST /v1/commands` plans the edit. On `ready`,
+`arguments` is the argv array and `command` its POSIX rendering — the
+same JSON the CLI prints with `--json`:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/commands \
+  -H 'content-type: application/json' -d '{
+    "instruction": "resize to 1280x720 using the gpu",
+    "assets": {"main": "10_input1.ts"},
+    "output_filename": "gpu_720p.mp4",
+    "adapter": "rules"
+  }'
+# → {"status": "ready",
+#    "arguments": ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info",
+#                  "-i", "/input/10_input1.ts",
+#                  "-vf", "format=yuv420p,hwupload_cuda,scale_cuda=w=1280:h=720,hwdownload,format=yuv420p",
+#                  "-map", "0:v:0", "-map", "0:a?",
+#                  "-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p",
+#                  "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+#                  "/output/gpu_720p.mp4"],
+#    "command": "ffmpeg -y -hide_banner … gpu_720p.mp4",
+#    "plan": {…}, "summary": […], "defaults": […], "warnings": […]}
+```
+
+`assets` is a **map of id → path/URL** and must include `main` (the
+input video); extra ids bind further inputs (a value may be
+`"kind:path"` to pin the kind). `target_shell` takes only `"posix"` —
+the rendering is derived from argv, never parsed back. `preflight:
+true` checks the local FFmpeg build before planning; `generation_id`
+makes an in-flight generation cancellable (`POST /v1/commands/cancel`);
+`previous_plan` revises an existing plan.
+
+**2 · Execute** — `POST /v1/runs` runs the ready argv — on deployments
+with execution enabled only (the docker image sets it; elsewhere 403).
+Post the **array**, never a shell string; a multi-pass plan posts
+`steps` (each pass's argv, final pass last), `serve_http: true`
+http-serves a generated HLS playlist for the Player tab:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/runs \
+  -H 'content-type: application/json' -d '{
+    "arguments": [ …the ready response's "arguments"… ],
+    "instruction": "resize to 1280x720 using the gpu"
+  }'
+# → {"run": {"id": "…", "status": "running",
+#            "output": "…", "http": false, …}}
+```
+
+`GET /v1/runs/{id}` polls the run, `GET /v1/runs/{id}/log` its log,
+`POST /v1/runs/{id}/stop` stops it.
+
+**3 · List player streams** — `GET /v1/streams` — the HLS / DASH
+playlists currently served from the output volume's `http/` tree
+(`serve_http` runs, the Files tab's hls play), each with a playable
+`url`:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/streams
+# → {"streams": [{"name": "titan.m3u8", "kind": "hls",
+#                 "path": "http/shotrun/titan.m3u8",
+#                 "url": "http://127.0.0.1:3011/http/shotrun/titan.m3u8",
+#                 "size": 244, "live": false, …}],
+#    "http_base_url": "http://127.0.0.1:3011",
+#    "total_size": 1138584, "file_count": 6}
+```
+
+**4 · Build info** — `GET /v1/env` — the FFmpeg build fass validates
+against: fass version, build info, registry version, and the presence
+of every encoder, filter and bitstream filter the registry references
+— what a `preflight: true` generation checks:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/env
+# → {"available": true, "version": "v1.137036.1aa5afe",
+#    "registry_version": "2.12.0",
+#    "encoders": {"video:libx264": {"encoder": "libx264", "present": true}, …},
+#    "filters": {"scale_cuda": {"present": true}, …}, …}
+```
+
+The complete endpoint list (files, media, config, RAG, mediainfo,
+tsanalyze, …) lives in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## MCP — fass as a tool for agents
 
@@ -568,8 +686,9 @@ command order, as a standalone analysis:
 
 The published image `boris271142/fass` (Docker Hub): fass compiled with
 Cython, FFmpeg 9.0 + NVIDIA hardware acceleration
-(`jrottenberg/ffmpeg:9.0-nvidia2404` base), plus the
-`boris271142/fass-rag` retrieval image. Four containers — `fass`, the
+(`boris271142/ffmpeg-sm_75_120` base — its CUDA filter stack JITs from
+compute_75 PTX, so Turing (sm_75) through Blackwell (sm_120) cards all
+work), plus the `boris271142/fass-rag` retrieval image. Four containers — `fass`, the
 `fass-worker` Apply sidecar, the `fass-rag` lexical RAG retriever
 (corpus index baked into its image, no volume), and the `fass-http`
 Apache sidecar for HLS/DASH stream runs — up with one script:
