@@ -485,6 +485,81 @@ curl -s http://127.0.0.1:8000/v1/env
 #    "filters": {"scale_cuda": {"present": true}, …}, …}
 ```
 
+**5 · Pointwise VMAF scoring** — `POST /v1/vmaf` scores `distorted`
+against `reference` frame by frame — the FFmpeg tab's "vmaf 1.0" button
+as an API. Both fields are **bare filenames** resolved against the
+volumes (reference: input → output; distorted: output → input); the
+reference is the ground truth. Probing picks the filter chain
+automatically — an 8-branch matrix over interlace × size (yadif
+deinterlace on whichever side is interlaced, distorted scaled to the
+reference's size, fps matched) — and `mode` routes the compute:
+`"auto"` (default: GPU first, CPU fallback), `"cpu"` or `"gpu"`
+(pinned; a pinned `gpu` with no GPU is a 502). Durations are
+independent: with a >1 s difference the first call answers **409** with
+the advisory and scoring over the shorter file proceeds only after a
+re-post with `"confirm": true` (the run itself always uses
+`eof_action=pass`):
+
+```bash
+curl -s http://127.0.0.1:8000/v1/vmaf \
+  -H 'content-type: application/json' -d '{
+    "reference": "input.mp4",
+    "distorted": "dist_720p.mp4"
+  }'
+# → 409 {"detail": "dist_720p.mp4 is 8.0 s, input.mp4 10.0 s — VMAF
+#     would be computed over the shorter file (8.0 s). Confirm to
+#     continue."}
+curl -s http://127.0.0.1:8000/v1/vmaf \
+  -H 'content-type: application/json' -d '{
+    "reference": "input.mp4",
+    "distorted": "dist_720p.mp4",
+    "mode": "auto",
+    "confirm": true
+  }'
+# → {"status": "ok",
+#    "id": "8f2c1ab0-…", "score_file": "8f2c1ab0-….json",
+#    "reference": "input.mp4", "distorted": "dist_720p.mp4",
+#    "mode": "gpu", "gpu_path": "full",
+#    "branch": "c2",
+#    "branch_label": "reference progressive, distorted progressive, different sizes",
+#    "model": "vmaf_v0.6.1",
+#    "steps": ["reference: input.mp4 — unchanged (progressive, 1920x1080, 30fps)",
+#              "distorted: dist_720p.mp4 — resized 1280x720 -> 1920x1080 (bicubic)",
+#              "duration: computed over the shorter file (8.0 s of 10.0 s)",
+#              "path: GPU full (scale_cuda on NVIDIA GeForce RTX 3080 Ti, libvmaf on CPU)",
+#              "model: vmaf_v0.6.1 — 1080p-calibrated"],
+#    "command": "ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+#      -i /input/dist_720p.mp4 -i /input/input.mp4 \
+#      -filter_complex '[0:v]scale_cuda=1920:1080:interp_algo=bicubic:format=yuv420p,hwdownload,setpts=PTS-STARTPTS[dd];[1:v]setpts=PTS-STARTPTS[rd];[dd][rd]libvmaf=model=…:log_fmt=json:log_path=…:eof_action=pass' \
+#      -f null -",
+#    "durations": {"reference": 10.0, "distorted": 8.0},
+#    "frames": 240,
+#    "pooled": {"mean": 87.93, "min": 52.1, "max": 99.4,
+#               "harmonic_mean": 84.2},
+#    "elapsed": 18.4,
+#    "json": {"model": "…", "frames": [{"frame_num": 0, "vmaf": 87.91}, …]}}
+```
+
+- **Transparency** — `command` is the exact ffmpeg command that produced
+  the score and `steps` names every extra step taken (which file was
+  deinterlaced, what was resized to what, the fps resample, the duration
+  truncation, GPU vs CPU and which card, the model). Scoring is a
+  sensitive domain — the response never lets a number stand without its
+  provenance.
+- **The score is kept** — the libvmaf JSON document is stored in the
+  scores volume (Config → Volumes → `/scores`) as `<uuid4>.json`, and
+  `<timestamp> <uuid> <reference> <distorted>` is appended to
+  `master.txt`; the scores remote mapping (SMB/S3/WebDAV) receives both
+  files after every score, best-effort.
+- **>4K reference** — the reference above 3840 px triggers a second
+  409 proposing to score at 4K-fit dimensions with the 4K model
+  (`vmaf_4k_v0.6.1`, when the image ships it); without the 4K model the
+  same request is a plain 400 ("scale the input to 4K first").
+- **Errors** — 400 bare-name/format problems, 404 file not in either
+  volume, 502 probe or ffmpeg failure (a pinned `gpu` with no card
+  names the missing GPU), 503 the output volume not mounted.
+
+
 The complete endpoint list (files, media, config, RAG, mediainfo,
 tsanalyze, …) lives in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
