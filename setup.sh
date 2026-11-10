@@ -12,6 +12,10 @@
 #   ./setup.sh --yes --http-port 9090           # the http stream sidecar port
 #   ./setup.sh --yes --gpu-pin 1                # fass's ffmpeg on GPU 1
 #
+# Linux only: Windows and macOS are not supported — the deployment is a
+# Linux Docker stack with the NVIDIA runtime. setup.sh refuses to start
+# on anything but Linux (WSL2 counts: it is Linux).
+#
 # The deployment is the published image boris271142/fass (Docker Hub) —
 # compiled, FFmpeg 9 + NVIDIA acceleration; there is nothing to build on
 # this machine. setup.sh creates the host folders mounted as /input,
@@ -44,6 +48,24 @@
 # before every compose up — so paths changed in the UI survive restarts.
 set -euo pipefail
 
+# Linux only — the deployment is a Linux Docker stack (the GPU path uses
+# the NVIDIA runtime). Windows and macOS are not supported: no build for
+# them exists, and there is nothing to fall back to.
+case "$(uname -s)" in
+  Linux) ;;
+  Darwin)
+    echo "error: fass is not supported on macOS — it is a Linux deployment (Docker stack with the NVIDIA runtime)." >&2
+    echo "Use a Linux machine, VM or cloud instance." >&2
+    exit 1 ;;
+  MINGW*|MSYS*|CYGWIN*|Windows_NT)
+    echo "error: fass is not supported on Windows — it is a Linux deployment (Docker stack with the NVIDIA runtime)." >&2
+    echo "Use a Linux machine, VM or cloud instance (WSL2 works: it is Linux)." >&2
+    exit 1 ;;
+  *)
+    echo "error: unsupported operating system '$(uname -s)' — fass is Linux only (Docker stack with the NVIDIA runtime)." >&2
+    exit 1 ;;
+esac
+
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/docker" && pwd)"
 REPO="$(dirname "$DIR")"
 IMAGE="boris271142/fass:latest"
@@ -73,7 +95,7 @@ while [[ $# -gt 0 ]]; do
     --http-port) HTTP_PORT="$2"; shift 2 ;;
     --gpu-pin)  GPU_PIN="$2"; shift 2 ;;
     -y|--yes) ASSUME=1; shift ;;
-    -h|--help) sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done

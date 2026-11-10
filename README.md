@@ -18,6 +18,11 @@ instruction ──> NLU (rules | llm) ──> EditPlan (strict schema)
                 render_posix (shlex.join) — display/copy only
 ```
 
+**Linux only.** fass is a Linux deployment — the Docker stack uses the
+NVIDIA runtime for the GPU path — and **Windows and macOS are not
+supported**: there is no build for them, and the install script
+(`setup.sh`) refuses to run on anything but Linux.
+
 ## Quick start
 
 This repo is the **public distribution tree**: everything runs from the
@@ -106,13 +111,27 @@ The workhorse: a natural-language request in, a validated command out.
   the main input, the rest become extra inputs (auto-typed from their
   probes).
 - **Output** — optional; a filename, or a stream URL to send to
-  (`rtmp://`, `rtsp://`, `srt://`, `udp://`, …). The `?` tip: naming the
-  output `/input/<file>` writes into the input folder for chained
-  processings — the next command picks it up by bare name.
+  (`rtmp://`, `rtsp://`, `srt://`, `udp://`, …). The filename's
+  **extension picks the output container** (`.mp4`, `.mkv`, `.ts`, …)
+  when the instruction names none — an explicit container word in the
+  instruction still wins, and a name that contradicts it (a `.mp4` name
+  with "make it mkv") is an error. An **elementary-stream** name writes
+  a raw dump: `.yuv` / `.rawvideo` / `.raw` → `-f rawvideo` (decoded
+  frames, `yuv420p` on CPU; on a GPU deployment the decode runs on the
+  card — `-hwaccel cuda -hwaccel_output_format cuda` +
+  `hwdownload,format=nv12`), `.h264` / `.264` → `-f h264` (Annex-B),
+  `.h265` / `.265` / `.hevc` → `-f hevc` (Annex-B — ffmpeg's raw HEVC
+  muxer is named "hevc"). `.av1` is refused: no AV1 elementary-stream
+  muxer exists in the build (its "av1" format is demux-only) — name a
+  `.mkv`, `.mp4` or `.webm` and pick the av1 codec instead. The `?`
+  tip: naming the output `/input/<file>` writes into the input folder
+  for chained processings — the next command picks it up by bare name.
 - **Watermark image** — a logo file; further logos go in as extra image
   inputs.
-- **Adapter** — `auto` (the LLM only when a provider is configured,
-  the rules otherwise), `rules`, or `llm`.
+- **Adapter** — `auto` (the LLM only when a provider is configured and
+  reachable — a configured-but-unreachable LLM falls back to the rules
+  with a warning, never a dead end; an explicit `llm` with the LLM down
+  is an error), `rules`, or `llm`.
 - **Additional inputs** — one row per extra input: a file (or stream
   URL), a kind selector (`auto` / `video` / `audio` / `image` /
   `source`), and a remove button; **"+ add input"** appends the next
@@ -308,7 +327,9 @@ Sections, top to bottom:
   deployment concern, pinned in the compose file with
   `CUDA_VISIBLE_DEVICES` — the container always gets **all** host GPUs,
   because a single-GPU presentation breaks NVENC
-  (`OpenEncodeSessionEx failed: unsupported device (2)`).
+  (`OpenEncodeSessionEx failed: unsupported device (2)`). Card support:
+  NVIDIA **Turing (sm_75) through Blackwell (sm_120)** — the full
+  generation list is in [Docker deployment](#docker-deployment).
 - **LLM provider** — `anthropic` or any OpenAI-compatible endpoint
   (strata, vLLM, …): scheme (http for local servers, https for TLS
   end-user APIs — OpenAI, DeepSeek, …), host, port (https: blank = 443),
@@ -664,9 +685,12 @@ audio with song.mp3" and "watermark it with a and b" work.
   `setts`, `filter_units`, `trace_headers`, `showinfo` (FFmpeg 7.1+), …) —
   any of them on top of the automatic ones; "trim" in a copy context is a
   stream-copy cut (`-ss`/`-t` with `-c copy`)
-- **Encoding options** — target bitrate (`cbr 10 Mbps`), pixel format
-  (8-bit / 10-bit / 4:4:4), H.264 profile & preset, audio resampling (sample
-  rate / channels), and **per-encoder options**: NVENC / QSV rate control,
+- **Encoding options** — target bitrate (`cbr 10 Mbps`, or per stream:
+  `video h265 3Mbps … audio aac 128kbps` → `-b:v 3000k -maxrate 3000k
+  -bufsize 6000k` + `-b:a 128k`), **GOP** (`gop 50` / "a gop of 50" →
+  `-g 50`), pixel format (8-bit / 10-bit / 4:4:4), H.264 profile &
+  preset, audio resampling (sample rate / channels), and **per-encoder
+  options**: NVENC / QSV rate control,
   ProRes profile, x264 / x265 / VVC tuning, encoder-specific flags — plus
   **GPU encoding** (nvenc) when a deployment exposes a GPU. On a GPU
   deployment the encoder choice is a **deployment default**, not only an
@@ -751,6 +775,11 @@ command order, as a standalone analysis:
   watermarks, subtitles, audio replacement, combiners or filter edits;
   the NLU asks for a follow-up (apply the edit first, then compare the
   result against the reference)
+- **Pointwise VMAF** — for frame-by-frame VMAF with a kept score file,
+  use `POST /v1/vmaf` (the FFmpeg tab's "vmaf 1.0" button; see
+  [HTTP API](#http-api)) instead: it deinterlaces/resizes to align the
+  pair, scores over the shortest file and stores the JSON score in the
+  scores volume with the exact command + steps that produced it
 - **Timeline alignment** — `setpts=PTS-STARTPTS` re-bases each input's
   pad only when its probe shows the stream carries packet pts; a raw
   bitstream (a bare Annex-B `.hevc`) demuxes without any, so the filter
@@ -760,10 +789,8 @@ command order, as a standalone analysis:
 ## Docker deployment
 
 The published image `boris271142/fass` (Docker Hub): fass compiled with
-Cython, FFmpeg 9.0 + NVIDIA hardware acceleration
-(`boris271142/ffmpeg-sm_75_120` base — its CUDA filter stack JITs from
-compute_75 PTX, so Turing (sm_75) through Blackwell (sm_120) cards all
-work), plus the `boris271142/fass-rag` retrieval image. Four containers — `fass`, the
+Cython, FFmpeg 9.0 + NVIDIA hardware acceleration, plus the
+`boris271142/fass-rag` retrieval image. Four containers — `fass`, the
 `fass-worker` Apply sidecar, the `fass-rag` lexical RAG retriever
 (corpus index baked into its image, no volume), and the `fass-http`
 Apache sidecar for HLS/DASH stream runs — up with one script:
@@ -773,6 +800,31 @@ Apache sidecar for HLS/DASH stream runs — up with one script:
                             # → http://<host>:8000
 ./scripts/web.sh            # start / pull / restart / stop / status / logs
 ```
+
+The image's FFmpeg (base `boris271142/ffmpeg-sm_75_120`, a rebuild of
+`jrottenberg/ffmpeg` 9.0.2) is compiled with **CUDA compute
+compatibility 7.5** — the compute capability of NVIDIA's **Turing**
+generation: its CUDA filter stack (`scale_cuda`, `overlay_cuda`, the
+`hwupload`/`hwdownload` bridges, GPU decode) is built as **compute_75
+PTX**, which the driver JITs forward to every newer architecture up to
+**sm_120**. Supported NVIDIA card generations:
+
+- **Turing (sm_75)** — GeForce RTX 20 series (2070 / 2080 / 2080 Ti), T4
+- **Ampere (sm_80 / sm_86)** — A100, A10 / A30 / A40, GeForce RTX 30
+  series (3060 – 3090 Ti), RTX A2000 – A6000
+- **Ada Lovelace (sm_89)** — L4 / L40 / L40S, GeForce RTX 40 series,
+  RTX 4000 Ada
+- **Hopper (sm_90)** — H100 / H200
+- **Blackwell (sm_100 / sm_120)** — B100 / B200 / GB200, GeForce RTX 50
+  series
+
+So **Turing (2018) and every newer generation works**; older generations
+— Pascal (sm_61: GTX 10xx, P4 / P100), Volta (sm_70: V100) and anything
+earlier — are **not** supported. (The stock `jrottenberg/ffmpeg` image
+goes the other way: its CUDA kernels cover sm_86 only, breaking cards
+older than Ampere — which is why the base is rebuilt.) The floor applies
+to the CUDA *filters*: NVENC / NVDEC / CUVID are header-only (ffnvcodec)
+driver APIs and are not gated by it.
 
 The web UI gets a **Config tab**: host-folder mappings for `/input`,
 `/output`, `/log` (each optionally mapped to a remote FTP / SFTP / SCP
