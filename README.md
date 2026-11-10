@@ -576,6 +576,16 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
   `<timestamp> <uuid> <reference> <distorted>` is appended to
   `master.txt`; the scores remote mapping (SMB/S3/WebDAV) receives both
   files after every score, best-effort.
+- **The model is picked automatically** — the reference's height chooses
+  the scoring model: anything taller than 1440p (i.e. 4K/2160p references
+  and up) automatically gets the 4K-calibrated `vmaf_4k_v0.6.1`,
+  everything at or below 1440p the 1080p-calibrated `vmaf_v0.6.1`. The
+  choice is reported in `model` and in `steps` (`"model: …
+  (4K-calibrated)"`). The 4K model must be loadable in the build —
+  `FASS_VMAF_MODEL_4K` (a full path), a `vmaf_4k_v0.6.1.pkl`/`.json` in
+  `FASS_VMAF_MODEL_DIR`, or the libvmaf built-in registry — and the
+  static image build doesn't bundle it, so a taller-than-1440p reference
+  is a 400 until the model file is provided.
 - **>4K reference** — the reference above 3840 px triggers a second
   409 proposing to score at 4K-fit dimensions with the 4K model
   (`vmaf_4k_v0.6.1`, when the image ships it); without the 4K model the
