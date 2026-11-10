@@ -21,7 +21,11 @@ instruction ──> NLU (rules | llm) ──> EditPlan (strict schema)
 **Linux only.** fass is a Linux deployment — the Docker stack uses the
 NVIDIA runtime for the GPU path — and **Windows and macOS are not
 supported**: there is no build for them, and the install script
-(`setup.sh`) refuses to run on anything but Linux.
+(`setup.sh`) refuses to run on anything but Linux. **Docker is required**
+(CLI + compose plugin + a daemon reachable from your user), and the
+machine needs **at least 2 GB of free RAM** — `setup.sh` checks both
+before asking anything and aborts with a clear error if either is
+missing.
 
 ## Quick start
 

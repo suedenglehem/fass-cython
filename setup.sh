@@ -16,6 +16,10 @@
 # Linux Docker stack with the NVIDIA runtime. setup.sh refuses to start
 # on anything but Linux (WSL2 counts: it is Linux).
 #
+# Docker is a hard requirement: setup.sh aborts (before asking anything)
+# if the docker CLI, the compose plugin, or a reachable daemon is missing.
+# The machine must also have at least 2 GB of free (available) RAM.
+#
 # The deployment is the published image boris271142/fass (Docker Hub) —
 # compiled, FFmpeg 9 + NVIDIA acceleration; there is nothing to build on
 # this machine. setup.sh creates the host folders mounted as /input,
@@ -65,6 +69,26 @@ case "$(uname -s)" in
     echo "error: unsupported operating system '$(uname -s)' — fass is Linux only (Docker stack with the NVIDIA runtime)." >&2
     exit 1 ;;
 esac
+
+# Docker is a hard requirement — the deployment IS the Docker stack. Abort
+# before asking anything: the CLI must be installed, the daemon reachable
+# from this user (setup.sh never uses sudo), and the compose plugin present
+# (the stack is started with `docker compose`).
+command -v docker >/dev/null 2>&1 \
+  || { echo "error: docker not found — install Docker (https://docs.docker.com/get-docker/) and re-run setup.sh." >&2; exit 1; }
+docker compose version >/dev/null 2>&1 \
+  || { echo "error: the docker compose plugin is missing — install docker-compose-plugin and re-run setup.sh." >&2; exit 1; }
+docker info >/dev/null 2>&1 \
+  || { echo "error: the docker daemon is not reachable from this user — start Docker (e.g. sudo systemctl start docker) and/or add your user to the docker group, then re-run setup.sh." >&2; exit 1; }
+
+# At least 2 GB of available RAM — the stack (ffmpeg, the sidecars, the LLM
+# adapter) OOMs or thraps badly below that. MemAvailable counts reclaimable
+# page cache, so memory that is used but reclaimable still counts as free.
+FREE_MB="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+[[ "$FREE_MB" =~ ^[0-9]+$ ]] \
+  || { echo "error: could not read available memory from /proc/meminfo — cannot continue." >&2; exit 1; }
+(( FREE_MB >= 2048 )) \
+  || { echo "error: only ${FREE_MB} MB of RAM available — fass needs at least 2048 MB free." >&2; exit 1; }
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/docker" && pwd)"
 REPO="$(dirname "$DIR")"
