@@ -840,6 +840,20 @@ older than Ampere — which is why the base is rebuilt.) The floor applies
 to the CUDA *filters*: NVENC / NVDEC / CUVID are header-only (ffnvcodec)
 driver APIs and are not gated by it.
 
+The base also builds **libvmaf with CUDA** — the `libvmaf_cuda` filter
+that the VMAF tab's `on gpu` path scores with. That rebuild matters:
+libvmaf 3.0.0's meson embeds each CUDA kernel as bare `nvcc --ptx` with
+no arch flag, so it defaults to **sm_52** PTX that modern drivers no
+longer JIT — the filter looks present, then `assert(0)`s in
+`init_fex_cuda` on first use. The base recompiles the kernels as a
+sm_75-PTX + sm_86-SASS fatbin (JIT-able across the same sm_75…sm_120
+range) and hard-fails the build if any kernel module is not a fatbin;
+it also bundles the CUDA compat driver at the path the nvidia container
+runtime mounts the host driver to, so GPU-less containers (the
+`fass-worker` sidecar) can launch the ffmpeg binary at all. Full detail:
+the base builder's README
+([suedenglehem/jrottenberg-ffmpeg-sm_75_120](https://github.com/suedenglehem/jrottenberg-ffmpeg-sm_75_120)).
+
 The web UI gets a **Config tab**: host-folder mappings for `/input`,
 `/output`, `/log` (each optionally mapped to a remote FTP / SFTP / SCP
 / S3 store), stream port mappings (in: `udp://host:port` binds to `0.0.0.0`
