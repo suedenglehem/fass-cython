@@ -432,8 +432,9 @@ HTTP_HOST="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
 # config.json: seed the deployment defaults (same shape as the container
 # entrypoint seeds on first boot) with the answers filled; on an existing
-# file keep everything and update llm, gpu.enabled, the volumes and the
-# stream base URL
+# file keep everything and update llm (host/port/timeout, api_key only
+# when one is given), the volumes and the stream base URL — but never
+# gpu.enabled (user state; see the write below)
 python3 - "$CFGJSON" "$INPUT" "$OUTPUT" "$LOG" "$LLM_HOST" "$LLM_PORT" "$API_KEY" "$GPU" "$LLM_TIMEOUT" "$HTTP_HOST" "$HTTP_PORT" <<'PYEOF'
 import json, os, sys
 path, inp, outp, logp, host, port, key, gpu, timeout, http_host, http_port = sys.argv[1:12]
@@ -464,7 +465,12 @@ for k, v in seed.items():
 cfg["llm"].update({"host": host, "port": int(port), "timeout": int(timeout)})
 if key:
     cfg["llm"]["api_key"] = key
-cfg["gpu"]["enabled"] = gpu == "1"
+# gpu.enabled is USER state (the Config tab's GPU toggle) — a re-run must
+# not clobber a CPU-only choice on a GPU host. Fresh installs get the
+# machine-derived value (already seeded above); existing configs keep
+# whatever the user set.
+if cfg.get("gpu", {}).get("enabled") is None:
+    cfg["gpu"]["enabled"] = gpu == "1"
 cfg.setdefault("streaming", {})["http_base_url"] = f"http://{http_host}:{http_port}"
 vols = cfg.setdefault("volumes", {})
 vols.update({"input": inp, "output": outp, "log": logp})
