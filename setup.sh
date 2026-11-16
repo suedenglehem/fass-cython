@@ -301,6 +301,18 @@ port_docker_owner() {
     esac
   done
 }
+# True when a RUNNING container of this install publishes the port — an
+# in-place re-run (the normal update path). Compose reconciles those
+# containers, so they are not blockers either.
+port_held_by_mine() {
+  local n
+  for n in $(docker ps --filter "publish=$1" --format '{{.Names}}' 2>/dev/null); do
+    case " ${MY_NAMES[*]:-} " in
+      *" $n "*) return 0 ;;
+    esac
+  done
+  return 1
+}
 
 for P in 8000 "$HTTP_PORT"; do
   port_in_use "$P" || continue
@@ -309,6 +321,10 @@ for P in 8000 "$HTTP_PORT"; do
     echo "error: port $P is held by the container '$owner' — it is not part of a fass install." >&2
     echo "Stop it (docker stop $owner) and re-run setup.sh." >&2
     exit 1
+  fi
+  if port_held_by_mine "$P"; then
+    echo "note: port $P is held by this install's own running stack — compose will reconcile it."
+    continue
   fi
   if [[ "$P" == 8000 ]]; then
     echo "error: port 8000 (the fass web UI) is in use by another program — stop it and re-run setup.sh." >&2
