@@ -290,6 +290,71 @@ clip as the `distorted` asset (the web UI's Output field does this).
 When the output folder holds no video, the clarification asks for the
 distorted file.
 
+## Multicast (host network mode)
+
+Multicast does not reliably cross the compose bridge: a published UDP
+port is unicast NAT, and the group has to be joined on the interface
+that actually receives it. The reliable setup is to share the host's
+network namespace with fass — the container then sees every host
+interface, joins the group on the right NIC, and `udp://<group>:<port>`
+addresses work exactly as they do on the host. Only `fass` goes
+host-mode; the sidecars (`fass-worker`, `fass-rag`) stay on the bridge
+publishing their ports to `127.0.0.1`, which fass reaches through the
+host netns.
+
+**Enabling it:** `setup.sh` does not set it up (the default install is
+bridge mode) — edit `docker/compose.yaml` by hand:
+
+- `fass` gains `network_mode: host` (its `ports:` entries are then
+  ignored by docker with a warning — fass binds 8000 on the host
+  directly), and its environment switches from compose service DNS to
+  the loopback: `FASS_DOCKER_WORKER=127.0.0.1:8001` and
+  `FASS_RAG_URL=http://127.0.0.1:8100`
+- `fass-worker` and `fass-rag` gain published ports
+  `127.0.0.1:8001:8001` / `127.0.0.1:8100:8100` (they are not
+  port-published in the default file)
+- `fass-http` (the http stream sidecar) is untouched — bridge + its
+  port
+
+Then `scripts/web.sh restart` to apply.
+
+**Verifying** — at startup fass runs `ip link show <name>` on every
+interface inside the container and looks for `MULTICAST` in the flag
+list (the result goes to the container log and to `GET /v1/env`). The
+Config tab shows a green/red **multicast** indicator in the *Streaming
+— port mappings* section — the interfaces with the flag are listed next
+to it. (Linux sets the flag by default, so it stays green in bridge
+mode too; host mode is still what makes the HOST's groups reachable —
+the indicator tells you the kernel side is multicast-capable.)
+
+**Host firewall** — in host mode fass's traffic is host traffic, so the
+host firewall decides. UDP multicast to the group's port must be
+allowed, e.g. with UFW: `sudo ufw allow 1234/udp` (per port). Without
+the rule a receiver fails silently — zero bytes, no error.
+
+**Worked example** — an H.264 stream at group `239.1.1.1:1234`, host NIC
+`192.168.0.30`. Sender, on the host:
+
+```sh
+ffmpeg -re -f lavfi -i testsrc=duration=300:size=640x360:rate=25 \
+  -c:v libx264 -preset veryfast -tune zerolatency -pix_fmt yuv420p \
+  -f mpegts "udp://239.1.1.1:1234?localaddr=192.168.0.30"
+```
+
+Receiver, in fass (Runs tab, Enter mode — `-t 60`: the validation gate
+wants a number of seconds, not `00:01:00`):
+
+```sh
+ffmpeg -i "udp://239.1.1.1:1234?localaddr=192.168.0.30&fifo_size=1000000&overrun_nonfatal=1" \
+  -t 60 -c copy /output/multicast.ts
+```
+
+`localaddr=<host IP>` pins the interface the group is joined on (it
+matters with several NICs); `fifo_size=1000000&overrun_nonfatal=1`
+absorbs arrival bursts so a joiner that lands mid-stream recovers
+instead of failing. Multicast **output** is symmetric — a command
+destination can be `udp://<group>:<port>?localaddr=<host IP>`.
+
 ## HTTP streams
 
 HLS/DASH runs destined for browser playback are served by the

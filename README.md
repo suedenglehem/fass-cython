@@ -120,6 +120,22 @@ The workhorse: a natural-language request in, a validated command out.
   field accepts several `-i file` tokens typed straight in: the first is
   the main input, the rest become extra inputs (auto-typed from their
   probes).
+  - **`/input` and `/output` conventions** — how a name finds its file:
+    a *bare* name (no `/`) resolves to the **input volume**
+    (`$FASS_INPUT_DIR`, `/input` inside the container); when it is not
+    there but exists in the **output volume**, it resolves there — the
+    [comparison](#quality-comparison-vmaf--psnr--ssim) convention, a
+    previous run's result (the distorted clip lives in `/output`). A
+    relative name containing `/` is a *subfolder of the field's own
+    volume* — `output/filename` typed here means
+    `/input/output/filename` — tried against the input volume first,
+    then the output volume (chained transcodes). An *absolute*
+    `/input/<name>` or `/output/<name>` names a previous run's result
+    by full path: accepted when the file exists, and remapped to the
+    real volume when `FASS_INPUT_DIR` / `FASS_OUTPUT_DIR` point
+    elsewhere than the literal `/input` / `/output`. Stream URLs and
+    source specs pass through untouched, and the run log records every
+    resolution as a note.
 - **Output** — optional; a filename, or a stream URL to send to
   (`rtmp://`, `rtsp://`, `srt://`, `udp://`, …). The filename's
   **extension picks the output container** (`.mp4`, `.mkv`, `.ts`, …)
@@ -134,8 +150,17 @@ The workhorse: a natural-language request in, a validated command out.
   muxer is named "hevc"). `.av1` is refused: no AV1 elementary-stream
   muxer exists in the build (its "av1" format is demux-only) — name a
   `.mkv`, `.mp4` or `.webm` and pick the av1 codec instead. The `?`
-  tip: naming the output `/input/<file>` writes into the input folder
-  for chained processings — the next command picks it up by bare name.
+  tip — **`/input` and `/output` conventions** (mirroring the Input
+  field): a bare name lands in the **output volume** (`$FASS_OUTPUT_DIR`,
+  `/output` inside the container); a relative name containing `/` is a
+  *subfolder of the output volume* — `input/filename` means
+  `/output/input/filename`, created at run time (no existence check);
+  the absolute `/input/<file>` is the one cross-volume destination — it
+  writes into the **input** folder for chained processings, and the
+  next command picks the file up by bare name (inside the container the
+  path is literal; elsewhere it is remapped to `$FASS_INPUT_DIR`).
+  Stream URLs (`rtmp://`, …) are never resolved, and `-` is the
+  null-muxer diagnostic output (the run log notes it).
 - **Watermark image** — a logo file; further logos go in as extra image
   inputs.
 - **Adapter** — `auto` (the LLM only when a provider is configured and
@@ -146,8 +171,9 @@ The workhorse: a natural-language request in, a validated command out.
   URL), a kind selector (`auto` / `video` / `audio` / `image` /
   `source`), and a remove button; **"+ add input"** appends the next
   `in1`, `in2`, … row.
-- **Options** — *preflight against the local FFmpeg build* (check
-  encoders/filters before planning), *verbose log* (`-loglevel verbose`;
+- **Options** — *preflight* (validate the generated command against the
+  **local FFmpeg build**, with an optional 1-second test run — see
+  [Preflight](#preflight)), *verbose log* (`-loglevel verbose`;
   the log lands in the output folder's `log/`), and *serve over http*
   (write the output into the http sidecar tree so the **Player** tab can
   play it — HLS / DASH, m3u8 / mpd).
@@ -169,6 +195,12 @@ The workhorse: a natural-language request in, a validated command out.
   - **error** (red) — the error list.
 - **Save** — freezes the last *ready* generation as a preset (re-openable
   from Info / Log → Presets).
+- **play2** — a live side-by-side comparison: the **Input** file on the
+  left, the **Output** file on the right, encoded in real time and
+  played in the **Player** tab
+  ([play2](#play2--live-side-by-side-sbs-hls)). Enabled with bare
+  filenames in both fields (the vmaf 1.0 gate); while the stream runs
+  the button is **Stop** (danger) and stops the run.
 - **Enter** — expert path, skips the NLU: prefills an editable
   `ffmpeg -i … -o …` skeleton from the input/output fields; **Generate**
   then validates it as a raw command.
@@ -213,6 +245,45 @@ The workhorse: a natural-language request in, a validated command out.
     single-file generation disarms the batch; *Enter* and *Mediainfo*
     are disabled while a pattern stands in the Input field.
 - **Clear** — resets the whole pane.
+
+### Preflight
+
+The **Validation** section of a ready result shows a *level* plus one
+row per check (ok / FAIL):
+
+- **`static`** — the default. The plan is validated against fass's own
+  registry: every codec, container, operation, and filter in the
+  command exists in the supported set.
+- **`preflight`** — the plan was additionally checked against the
+  **FFmpeg binary that is actually installed** on this deployment.
+  Availability is build-specific — the same `-c libx264` or `-f webm`
+  works in one build and not in another — so it is probed, never
+  assumed. The build check runs automatically whenever the input file
+  was probed (and a local ffmpeg exists), and always when the
+  *preflight* option is checked. It reports:
+  - **the build** — ffmpeg present, and its version;
+  - **every encoder** the command will use — the video encoder (the
+    NVENC coder for a GPU plan, the Quick Sync coder for a QSV plan;
+    `-c copy` and raw dumps have no encoder to check), the audio
+    encoder (no-audio containers like GIF have none — the plan
+    emitted `-an`), and a soft-subtitle encoder when the container
+    carries one;
+  - **every filter** the command uses;
+  - **the output muxer** — probed from the build's `-muxers` list;
+  - **subtitle dumps** — that the input actually has a subtitle stream
+    to dump.
+
+With the *preflight* option checked, fass goes one step further and
+executes a **1-second test run**: the generated command against the
+local build with its output replaced by `-t 1 -f null -` (multi-pass
+plans test the first pass; timeout 120 s). The test run is
+**informative, never blocking** — a rejected command still comes back
+*ready*; the verdict appears as a check row plus a warning ("preflight
+test run (informative): …"), and the user who runs the command gets
+the full error log. The CLI equivalent is `--preflight`
+([CLI](#cli)); the API field is `preflight: true`
+([HTTP API](#http-api)), and `GET /v1/env` lists exactly what the check
+inspects.
 
 ### Files tab — the volumes
 
@@ -259,8 +330,21 @@ Runs with *serve over http* land here as HLS / DASH playlists:
   badges), size, modified, and a **play** row action; **↻ refresh**
   re-lists, and the list auto-polls while the tab is open, so a live
   stream keeps appearing as it is written;
-- playback uses the bundled shaka-player with a status line ("playing
-  HLS — …", or the fatal error);
+- **play2** — the FFmpeg tab's play2 stream appears here at the fixed
+  playlist `http/play2/stream.m3u8`, **live** while its run runs;
+  stopping it here flips the FFmpeg tab's toggle back to play2
+  ([play2](#play2--live-side-by-side-sbs-hls));
+- playback uses the bundled **shaka-player** (v5.3.2, served from the
+  app's own `/static/` — the page has no CDN dependencies): it plays
+  both HLS and DASH from the `http/` tree, with a status line
+  ("playing HLS (shaka-player) — …", or the fatal error). The play
+  button doubles as stop (the player is destroyed before a re-load), and
+  a browser without the media APIs shaka needs (MSE) gets a note
+  instead of a dead player. A live playlist appears in the table the
+  moment the muxer opens it — the UI waits for the first segment line
+  before loading (a segment-less playlist fails with Shaka error
+  1002), so the play2 stream auto-plays as soon as its first segment
+  lands;
 - **Purge stream tree** (danger, confirmed) — deletes everything under
   the output volume's `http/` tree.
 
@@ -303,11 +387,9 @@ not port-published).
 
 Sections, top to bottom:
 
-- **Appearance** — theme (auto / light / dark "night" / kitty "pink" /
-  autodesk "gray") and content width (default 860 px / wider 1 260 px);
-  remembered per browser.
-- **Volumes** — the host folders behind `/input`, `/output`, `/log`,
-  each with an optional **remote mapping** (FTP / SFTP / SCP / S3 bucket —
+- **Volumes — host folders ↔ container** — the host folders behind
+  `/input`, `/output`, `/log`, `/scores`, each with an optional
+  **remote mapping** (FTP / SFTP / SCP / S3 bucket —
   `ftplib`, paramiko, boto3; install the `[storage]` extra):
   - **input** — a file missing locally is *downloaded from the remote
     before use*;
@@ -323,15 +405,64 @@ Sections, top to bottom:
   naming* checkbox (S3 objects keyed by UUID, the real basename in
   object metadata), and a **test (unsaved values)** button. Under
   docker, on-host services are reached as `host.docker.internal`;
-  sftp/scp host keys are not pinned (dev-tool convention).
-- **Streaming — port mappings** — the host-address rewrite for stream
-  URLs: *the host in a URL → the docker host* (udp/rtp inputs bind
-  0.0.0.0 inside the container), the host address (docker bridge
-  gateway, default 172.17.0.1), and per-port rows (label, container
-  port, host port, proto) with **"+ add port mapping"**; and the
-  **HLS player video bitrate (kbps)** field (default 3 000, 50–50 000)
-  — the video bitrate of the Files tab's **hls play** (the segment
-  bufsize is auto 2×).
+  sftp/scp host keys are not pinned (dev-tool convention). Below the
+  volume rows: **min free disk space for output (GB)** (default 2,
+  0 = no warning) — the UI polls the /output volume's free space every
+  30 s; when it drops below the value a warning pops up and a banner
+  stays in the tab ("⚠ /output low: X.XX GB free (min Y GB)"). The same
+  banner also reports the LLM being down (it pings the endpoint every
+  20 s).
+- **LLM provider** — `anthropic` or any OpenAI-compatible endpoint
+  (strata, vLLM, …): scheme (http for local servers, https for TLS
+  end-user APIs — OpenAI, DeepSeek, …), host, port (https: blank = 443),
+  api key (optional for the openai provider), model, timeout (1–300 s,
+  default 90), and **thinking mode** — two independent tickers
+  (openai provider — Qwen3 / strata / vLLM): **ffmpeg cmd** (command
+  generation + validation) and **rag** (the LLM answer on the RAG tab).
+  Both **off by default** — for the structured output the reasoning
+  trace is pure overhead (and can exhaust max_tokens); endpoints that
+  reject the chat-template kwarg fall back to a plain request
+  automatically. Setting or switching the model runs a capability
+  probe: a model without thinking gets both tickers permanently
+  disabled (until the model is switched again); undetected leaves them
+  enabled. **Test LLM (unsaved values)** reports "ok — model X answered
+  in Ns: '…'" and re-runs the probe.
+- **Streaming — port mappings (host port ↔ container port)** — the
+  host-address rewrite for stream URLs: *the host in a URL → the docker
+  host* (udp/rtp inputs bind 0.0.0.0 inside the container), the host
+  address (docker bridge gateway, default 172.17.0.1), and per-port
+  rows (label, container port, host port, proto) with
+  **"+ add port mapping"**. Right of the section title: a **multicast**
+  indicator — green **multicast enabled** / red **multicast disabled**
+  — the startup check (once per process, cached; also in `GET /v1/env`
+  and the container log) of whether any container interface carries
+  the MULTICAST flag (`ip link show` over every interface). It tells
+  you the *kernel side* is multicast-capable — the prerequisite for
+  receiving a multicast group source (`udp://239.x.x.x:port`) at all.
+  Linux sets the flag by default, so it stays green in bridge mode too;
+  what makes the host's groups actually reachable is host network mode
+  + the host firewall — see [Multicast input/output](#docker-deployment).
+- **Shaka player** — the settings of the Player tab's player
+  (shaka-player, bundled locally — the page has no CDN dependencies).
+  One row: **bitrate play file** (50–50 000 kbps, default 3 000 = the
+  3M reference) — the video bitrate of the Files tab's **hls play**
+  single-bitrate stream (H.264 1080p50 + AAC-LC 128 k; the segment
+  bufsize is auto 2×); **bitrate play2 (kbps)** (default 5 000 = the
+  5M reference) — the video bitrate of the FFmpeg tab's **play2**
+  side-by-side live HLS encoding (CBR, the buffer is auto 2×);
+  **stream retention — days to keep** (default 1) — the hourly sweep
+  deletes Player-tab stream dirs whose newest file is older than this
+  many days, 0 = keep forever. Second row — **Encryption** (VOD only):
+  **aes-128 key** (32 hex chars, empty = off) — VOD HLS encodes come
+  out AES-128 encrypted (mpegts segments; players and ffmpeg fetch the
+  key via the EXT-X-KEY URI the app serves at `/keys/encryption.key`,
+  so encrypted HLS plays in the Player tab); **dash key** + **dash kid
+  (key id)** (32 hex each, both needed) — VOD DASH encodes come out
+  CENC AES-CTR encrypted (decrypting an encrypted DASH input:
+  reassemble the fragmented mp4 from the init + chunk segments and read
+  it with `-decryption_key` + this key before -i — this build's dash
+  format is mux-only; the MPD carries no pssh, so encrypted DASH is not
+  playable in the browser).
 - **GPU (NVIDIA)** — enable nvenc (H.265, and AV1 when the GPU can
   encode it — H.264 stays on libx264). *Which* GPU ffmpeg uses is a
   deployment concern, pinned in the compose file with
@@ -340,19 +471,28 @@ Sections, top to bottom:
   (`OpenEncodeSessionEx failed: unsupported device (2)`). Card support:
   NVIDIA **Turing (sm_75) through Blackwell (sm_120)** — the full
   generation list is in [Docker deployment](#docker-deployment).
-- **LLM provider** — `anthropic` or any OpenAI-compatible endpoint
-  (strata, vLLM, …): scheme (http for local servers, https for TLS
-  end-user APIs — OpenAI, DeepSeek, …), host, port (https: blank = 443),
-  api key (optional for the openai provider), model, timeout (1–300 s,
-  default 90), and **thinking mode**
-  (openai provider — Qwen3 / strata / vLLM; **off by default** — no
-  reasoning trace, faster JSON; endpoints that reject the chat-template
-  kwarg fall back to a plain request automatically). **Test LLM (unsaved
-  values)** reports "ok — model X answered in Ns: '…'".
 - **RAG — documentation retrieval** — the service status: url, timeout,
   top_k, max evidence chars, the configured corpus, whether the
   instruction is sent into the query, and which corpora are loaded — or
-  "RAG disabled" / "service unreachable (fail-open)".
+  "RAG disabled" / "service unreachable (fail-open)". (The LLM answer
+  appended to a RAG-tab search has its own **rag** thinking ticker —
+  see LLM provider.)
+- **API key** — an optional key protecting the control API (see
+  [HTTP API](#http-api)): the **enable api key** ticker and the
+  **fass api key** field (at least 16 characters when enabled). With
+  the ticker on, every `/v1/*` call must send
+  `Authorization: Bearer <key>` — anything else gets 401. The web page
+  itself stays open (it is content serving for the player, not the
+  control API): it keeps the key in the browser, sends it automatically
+  with every API call, and pops a key-entry banner at the top when a
+  401 comes back. The key follows the LLM API key precedent — returned
+  clear by `GET /v1/config`, masked by the UI — and the config is
+  re-read per request, so toggling the ticker takes effect immediately,
+  no Apply. Ticker off (or a blank key) = the API stays open, exactly
+  as before.
+- **Appearance** — theme (auto / light / dark "night" / kitty "pink" /
+  autodesk "gray") and content width (default 1260 px / narrower
+  860 px); remembered per browser.
 - **Deploy** (docker deployments) — the docker-control + fass-worker
   sidecar status; **Save** (LLM, stream addresses and the compose
   preview are live immediately; volumes / ports / GPU take effect after
@@ -360,15 +500,32 @@ Sections, top to bottom:
   host is rejected (the config file stays untouched and the form is
   reverted to the saved values), and a successful save pops a
   confirmation naming what is live vs what still waits for Apply;
-  **Test all** (sanity-checks the saved settings: LLM connection,
-  remote-storage mappings, and the GPU when it is enabled —
-  unconfigured items are reported as skipped, not failed);
+  **Test all** — runs the same checks against the *current form
+  values* (what a Save would store), one line per check: the LLM
+  (against the unsaved block — "ok — model X answered in Ns", or
+  "not configured — skipped"), each remote mapping of input / output /
+  log (a `none` block reports "none configured — skipped"), and the
+  GPU (only when the form checkbox is enabled — else
+  "disabled — skipped"); unconfigured / disabled items are reported as
+  *skipped*, not failed;
   **Apply to container** (danger — asks the sidecar to recreate
   the container from the saved config; the connection drop is expected,
   the UI polls the apply result, and a swap that fails partway
   re-creates the old container); and the **generated compose** (what
   Apply will create). At startup, a configured folder that is missing
   on the host raises an error banner and switches the user to this tab.
+- **Process control** (the tab's very bottom, every deployment) —
+  **⏻ Stop ffmpeg processes** (danger, no confirmation,
+  `POST /v1/ffmpeg/stop-all`) — the emergency stop: kills every ffmpeg
+  fass launched (FFmpeg-tab runs + vmaf scoring) and every stray
+  ffmpeg process. The per-run stop is narrower: the Runs tab / a stream
+  row stops ONE run — SIGTERM its exact process group, SIGKILL after
+  ~5 s if it survives. Beside the button: **ffmpeg process max time
+  (seconds)** (default 21 600 = 6 h, 0 = unlimited) — the hard wall
+  time for ONE fass-launched ffmpeg process (a run attempt or one VMAF
+  chain attempt); a process still printing output is never killed
+  early — only a 3-minute silence (VMAF) counts as a stall.
+  `FASS_VMAF_TIMEOUT` overrides this for VMAF only.
 
 ## CLI
 
@@ -431,11 +588,25 @@ fass examples                               # supported-feature summary + exampl
 
 ## HTTP API
 
-`fass serve` is a JSON API (FastAPI), and the web UI is just one of its
-clients. Every domain outcome is a structured **200** with a
+`fass serve` is a JSON API (FastAPI) at `http://<host>:8000`, and the
+web UI is just one of its clients — every tab feature works with curl.
+Every domain outcome is a structured **200** with a
 `status` — `ready`, `needs_clarification`, `unsupported`, `error`
 (`cancelled` when an in-flight generation is aborted); 4xx is reserved
-for malformed requests.
+for malformed requests. There is **no authentication by default** —
+anyone who can reach port 8000 can generate commands, execute them and
+rewrite the deployment config — but the Config tab's **API key**
+section (before Appearance) can lock the control API: with the
+**enable api key** ticker on, every `/v1/*` call must carry
+`Authorization: Bearer <key>` (the key is at least 16 characters) or
+gets 401, while the page, `/static`, `/media` and `/keys` routes stay
+open for the player. Either way, run fass on a trusted network or
+behind an authenticating proxy. Execution itself stays off without
+`FASS_ALLOW_EXECUTE=1` (the docker image sets it).
+
+The five most-used groups are below; the **complete endpoint
+reference** — all routes, request fields, responses and curl examples —
+is in [API.md](API.md).
 
 **1 · Generate** — `POST /v1/commands` plans the edit. On `ready`,
 `arguments` is the argv array and `command` its POSIX rendering — the
@@ -455,7 +626,7 @@ curl -s http://127.0.0.1:8000/v1/commands \
 #                  "-vf", "format=yuv420p,hwupload_cuda,scale_cuda=w=1280:h=720,hwdownload,format=yuv420p",
 #                  "-map", "0:v:0", "-map", "0:a?",
 #                  "-c:v", "libx264", "-crf", "23", "-pix_fmt", "yuv420p",
-#                  "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
+#                  "-c:a", "libfdk_aac", "-b:a", "160k", "-movflags", "+faststart",
 #                  "/output/gpu_720p.mp4"],
 #    "command": "ffmpeg -y -hide_banner … gpu_720p.mp4",
 #    "plan": {…}, "summary": […], "defaults": […], "warnings": […]}
@@ -510,7 +681,7 @@ of every encoder, filter and bitstream filter the registry references
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/env
-# → {"available": true, "version": "v1.137036.1aa5afe",
+# → {"available": true, "version": "v1.137036.8cad5dd",
 #    "registry_version": "2.12.0",
 #    "encoders": {"video:libx264": {"encoder": "libx264", "present": true}, …},
 #    "filters": {"scale_cuda": {"present": true}, …}, …}
@@ -571,6 +742,55 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
 #    "json": {"model": "…", "frames": [{"frame_num": 0, "vmaf": 87.91}, …]}}
 ```
 
+**The same request on CPU and on GPU** — pin `mode` to see exactly where
+the compute goes:
+
+```bash
+# CPU — decode, scaling/deinterlace and the VMAF computation all on the CPU
+curl -s http://127.0.0.1:8000/v1/vmaf \
+  -H 'content-type: application/json' -d '{
+    "reference": "input.mp4",
+    "distorted": "dist_720p.mp4",
+    "mode": "cpu"
+  }'
+# → … "mode": "cpu", "gpu_path": "none",
+#    "steps": […, "path: CPU (all filters + libvmaf on CPU)", …],
+#    "command": "ffmpeg -i /output/dist_720p.mp4 -i /input/input.mp4 \
+#      -filter_complex '[0:v]scale=1920:1080:flags=bicubic,setpts=PTS-STARTPTS[dd];[1:v]setpts=PTS-STARTPTS[rd];[dd][rd]libvmaf=model=version=vmaf_v0.6.1:log_fmt=json:log_path=…:eof_action=pass' \
+#      -f null -"
+
+# GPU — decode on the GPU; on a build with libvmaf_cuda (the CUDA libvmaf
+# rebuild) the VMAF computation itself runs on the GPU too
+curl -s http://127.0.0.1:8000/v1/vmaf \
+  -H 'content-type: application/json' -d '{
+    "reference": "input.mp4",
+    "distorted": "dist_720p.mp4",
+    "mode": "gpu"
+  }'
+# → … "mode": "gpu", "gpu_path": "score",
+#    "steps": […, "path: GPU score (decode, scaling and the VMAF computation
+#       itself on NVIDIA GeForce RTX 3080 Ti — libvmaf_cuda)", …],
+#    "command": "ffmpeg -hwaccel cuda -hwaccel_output_format cuda \
+#      -i /output/dist_720p.mp4 -hwaccel cuda -hwaccel_output_format cuda \
+#      -i /input/input.mp4 \
+#      -filter_complex '[0:v]scale_cuda=1920:1080:interp_algo=bicubic:format=yuv420p,setpts=PTS-STARTPTS[dd];[1:v]scale_cuda=1920:1080:interp_algo=bicubic:format=yuv420p,setpts=PTS-STARTPTS[rd];[dd][rd]libvmaf_cuda=model=version=vmaf_v0.6.1:log_fmt=json:log_path=…:eof_action=pass' \
+#      -f null -"
+```
+
+- **`gpu_path`** — which stage produced the score: `"score"` (the whole
+  chain on the GPU — decode, scaling and the VMAF computation itself;
+  needs a build with the `libvmaf_cuda` filter and no fps resample — by
+  far the fastest on long files), `"full"` (GPU decode +
+  scale/deinterlace, then `hwdownload` and libvmaf on the CPU),
+  `"decode_accel"` (GPU decode only, all filters on the CPU) or `"none"`
+  on a CPU run.
+- **Persistent "vmaf on gpu"** — the Config tab's GPU (NVIDIA) section
+  has a *vmaf on gpu* option (persisted in `config.json`). When it is
+  on, `mode: "auto"` jobs route to the GPU-scoring chain — as if
+  `"mode": "gpu"` had been sent; an explicit `"cpu"` or `"gpu"` always
+  passes through unchanged. Without the `libvmaf_cuda` filter the jobs
+  take the previous GPU paths and say so in `steps`.
+
 - **Transparency** — `command` is the exact ffmpeg command that produced
   the score and `steps` names every extra step taken (which file was
   deinterlaced, what was resized to what, the fps resample, the duration
@@ -600,9 +820,8 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
   volume, 502 probe or ffmpeg failure (a pinned `gpu` with no card
   names the missing GPU), 503 the output volume not mounted.
 
-
-The complete endpoint list (files, media, config, RAG, mediainfo,
-tsanalyze, …) lives in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+The complete endpoint reference (all 53 routes, request fields,
+responses and curl examples) is in [API.md](API.md).
 
 ## MCP — fass as a tool for agents
 
@@ -681,6 +900,57 @@ audio with song.mp3" and "watermark it with a and b" work.
   vidstabdetect pass measures the shake into a `.trf` next to the
   output, the final pass applies vidstabtransform — the response
   carries the plan's `steps` and the execution layer runs them in order
+- **Double-pass encoding** — fass runs at most TWO ffmpeg passes, never
+  more (a "triple pass" / "3-pass encode" request is refused as
+  unsupported). The plan model produces two native shapes: the
+  **two-pass vidstab** plan above, and a **two-pass H.264 CPU encode**
+  (`double pass h264, about 100 MB` / `two pass, video bitrate 5M`) —
+  pass 1 writes x264 stats, pass 2 does the final encode; H.264 on the
+  CPU only (never GPU/QSV, never an ABR ladder), allowed only when the
+  request also names a size target or a video bitrate, and VOD only
+  (a file or VOD hls/dash output — never a live or stream destination).
+  Both run as ONE job and the execution layer collates the two passes'
+  logs into a single run. For encoders the plan model does not
+  double-pass — **x265 / nvenc / AV1** — the image ships user-facing
+  scripts under `/opt/multistaged/` (`twopass_x265.sh`,
+  `twopass_nvenc.sh`, `twopass_av1.sh`, and a `vidstab.sh` wrapper;
+  VOD-only, exactly two stages, see `/opt/multistaged/README.md` for
+  usage). Note: 9.0.2's `hevc_nvenc` has no `-pass`, so the nvenc
+  script is a SINGLE invocation with `-multipass qres`
+  (quarter-resolution analysis) rather than two.
+- **Encrypted VOD output** — HLS **AES-128** and DASH **CENC AES-CTR**,
+  keyed from the Config tab's "Shaka player" section (VOD only):
+  - **HLS AES-128** — the `aes-128 key` field (32 hex chars) is written
+    at app start and on every config save to `/keys/encryption.key`
+    (16 binary bytes) and `/keys/keyinfo.txt` (line 1 = the key URI,
+    line 2 = the file path); the VOD HLS encode then uses
+    `-hls_key_info_file /keys/keyinfo.txt`, so the playlist's
+    `EXT-X-KEY` URI points at the app's own `/keys` route and a player
+    fetches and decrypts transparently — the 9.0.2 muxer writes ONE
+    `EXT-X-KEY` with a constant all-zero IV for the whole playlist,
+    which both ffmpeg and Shaka read back fine. **AES-128 with mpegts
+    segments only** — SAMPLE-AES and fragmented-mp4 encryption are
+    refused, and an explicit "plain / unencrypted hls" omits the key
+    for that one encode. Decoding an encrypted HLS *input* (an m3u8
+    whose `EXT-X-KEY` URI is http) takes `-protocol_whitelist
+    file,crypto,data,http,tcp` before `-i` (the muxer opens key files
+    with a restricted whitelist) — on the FFmpeg tab's direct-command
+    path (the plan model does not express input-side options).
+  - **DASH CENC** — the `dash key` + `dash kid` fields (32 hex each)
+    become `-format_options
+    "encryption_scheme=cenc-aes-ctr:encryption_key=…:encryption_kid=…"`,
+    which the dash muxer forwards to the fmp4 segment muxer — the media
+    is fully encrypted (the init segment carries the `sinf` → `tenc`
+    protection boxes with `default_isProtected=1`) and round-trips with
+    the key. Decoding: this build's `dash` format is MUX-ONLY (no DASH
+    demuxer) and 9.0.2 renamed the key option — reassemble the
+    fragmented mp4 (init segment + its chunk `.m4s` files concatenated)
+    and read it with the BMFF demuxer's `-decryption_key <32 hex>`
+    before `-i` (direct-command path; the old `-cenc_decryption_key`
+    no longer exists). Known 9.0.2 upstream limitation: the MPD
+    carries no ContentProtection / `default_KID` / pssh box, so a
+    player that needs them to pick the key will not find them in the
+    manifest — the media still decrypts with the key.
 - **Interlaced output** — `transcode to mpegts h264 3Mbps 1080p interlaced
   tff` (also `bff`, "top field first", "bottom frame first"): the scaling
   runs first, then `tinterlace=interleave_top|bottom` merges consecutive
@@ -695,8 +965,11 @@ audio with song.mp3" and "watermark it with a and b" work.
   MP4 / MOV / MKV / WebM / MPEG-TS / MXF / AVI / FLV / GIF / WebP / OGV with
   H.264 / H.265 / AV1 (libaom, the default) / SVT-AV1 / VP9 / VP8 / Theora /
   VVC / MPEG-2 / ProRes / MJPEG, audio in MP3 / AAC / FLAC / Opus /
-  ALAC / AC-3 / E-AC-3 / PCM, HLS, and more (see
-  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). When the probes show the input
+  ALAC / AC-3 / E-AC-3 / PCM, HLS, and more. The default AAC encoder is
+  `libfdk_aac` (better quality per bitrate) — the built-in `aac` stays
+  only on an explicit native-AAC request, and a plan encoding fdk on a
+  build without `libfdk_aac` falls back to the built-in with a warning.
+  When the probes show the input
   streams already match, it **remuxes** (`-c copy`) instead of re-encoding —
   with bitstream filters in **both directions**: Annex-B restamp
   (`h264_mp4toannexb` / `hevc_mp4toannexb`) for mp4/mov → MPEG-TS, ADTS strip
@@ -759,8 +1032,8 @@ audio with song.mp3" and "watermark it with a and b" work.
 
 The full web API (every endpoint — `POST /v1/commands`, `POST /v1/runs`,
 the files / media / config endpoints), the security model, the validation
-levels, the test suite, and the roadmap live in
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+levels, the authentication posture and the curl examples live in
+[API.md](API.md).
 
 ## Quality comparison (VMAF / PSNR / SSIM)
 
@@ -805,6 +1078,76 @@ command order, as a standalone analysis:
   bitstream (a bare Annex-B `.hevc`) demuxes without any, so the filter
   is skipped for that pad and the run notes it (frames compare in
   arrival order)
+
+## play2 — live side-by-side (SBS) HLS
+
+The FFmpeg tab's **play2** button (next to **vmaf 1.0**) is a live
+visual comparison: the current **Input** file on the **left** (the
+source) and the current **Output** file on the **right** (the derived /
+transcoded clip), encoded in real time and played in the **Player**
+tab. Use it to eyeball a transcode against the original — desyncs,
+banding, deinterlace artifacts — while it is still happening.
+
+- **What you see** — two equal tiles (the bigger input's aspect),
+  each inside a 1 px frame (**input** = green, **output** = blue), a
+  20 px gap between the frames, an `input` / `output` label under each
+  tile, and the play position in seconds in the bottom bar (`12.34
+  s`) — all on a black 1920x1080 @ 60 canvas. Each clip is normalized
+  first: deinterlace (interlaced frames only), constant 60 fps, scaled
+  to the tile size, yuv420p — a drift between the two halves is
+  visible immediately.
+- **Encoding** — H.264 1920x1080 at 60 fps, GOP 20, CBR at the
+  **bitrate play2 (kbps)** Config-tab field (default 5 000 = the 5M
+  reference; the buffer is auto 2×) + AAC-LC 128 k/48 kHz, 2 s
+  MPEG-TS segments in an **event** playlist (every segment is kept, so
+  the Player can rewind through the whole comparison). A GPU
+  deployment (`gpu.enabled` and `h264_nvenc` in the build) takes the
+  GPU path — NVDEC decode, `yadif_cuda` / `scale_cuda` / `overlay_cuda`,
+  `h264_nvenc`; a CPU box (or a stale `gpu.enabled` without the
+  encoder) takes the CPU path — `bwdif` + `libx264` — and the run
+  notes it. Audio is the source clip's (the left one).
+- **The scripts own the presentation** — the pipeline and the encoding
+  are two bash scripts baked into the image
+  (`/opt/play2/sbs_hls_cpu.sh`, `/opt/play2/sbs_hls_nvidia.sh`); fass
+  only launches them with absolute paths and env (`LOOP=1`, plus
+  `VBIT` / `VBUF` from the bitrate field). Tweak titles, overlays or
+  the encode by editing the scripts in `tests/double_view/` and
+  rebuilding the image — fass never rewrites the pipeline.
+- **It runs until stopped** — fass passes `LOOP=1` (`-stream_loop -1`
+  on both inputs), so the comparison loops forever instead of dying
+  after one pass; it is a live stream, not a file to finish.
+- **The button tracks the real run** — play2 ↔ **Stop** (danger): a
+  1.5 s poll of the run record flips the label back on its own
+  whenever the run goes terminal, no matter where the stop came from —
+  the button, the Player tab's stop, the Runs tab, a crash, or the run
+  record vanishing. Re-entering the FFmpeg tab re-syncs it.
+- **Where it lands** — a fixed stream tree `{output}/http/play2/`
+  (wiped and recreated on every start), playlist
+  `http/play2/stream.m3u8`, listed by `GET /v1/streams` and **live**
+  in the Player tab's streams table while the run runs. On start the
+  UI jumps to the Player tab and auto-plays once the first playlist
+  lands.
+- **Stop** — the ordinary run stop: the bash script and its child
+  ffmpeg share one process group, so stopping the run kills both.
+- **Gates** — bare filenames in BOTH fields (the vmaf 1.0 gate); 404 a
+  file missing from its volume, 422 a non-video name, 409 a second
+  play2 while one already plays, 503 with execution disabled or the
+  script missing from the image.
+
+The API is `POST /v1/streams/play2` (bare names, like `/v1/vmaf`):
+
+```bash
+curl -s http://127.0.0.1:8000/v1/streams/play2 \
+  -H 'content-type: application/json' -d '{
+    "input": "10_input1.ts",
+    "output": "trans_720p.ts"
+  }'
+# → {"run_id": "…", "playlist": "http/play2/stream.m3u8",
+#    "url": "http://127.0.0.1:3011/http/play2/stream.m3u8",
+#    "encoder": "h264_nvenc"}
+```
+
+Stop it with the ordinary `POST /v1/runs/{run_id}/stop`.
 
 ## Docker deployment
 
@@ -877,6 +1220,83 @@ pick it up by bare name (chained processings). The Config tab's
 `fass-worker` sidecar (a container cannot recreate itself). Full details:
 [docker/README.md](docker/README.md).
 
+**Multicast input/output** — multicast does not cross the compose
+bridge's NATted ports, so for it fass runs in the **host network
+namespace**: add `network_mode: host` to the `fass` service in
+`docker/compose.yaml` (plus the two sidecar port/URL tweaks it needs —
+the details at the end of this paragraph). Only `fass` goes host-mode
+(the sidecars stay on the bridge, reachable on `127.0.0.1`), so a
+multicast group source works
+verbatim — a minute of `239.1.1.1:1234` on host NIC `192.168.0.30`, in
+the Runs tab's Enter mode:
+
+```sh
+ffmpeg -i "udp://239.1.1.1:1234?localaddr=192.168.0.30&fifo_size=1000000&overrun_nonfatal=1" \
+  -t 60 -c copy /output/multicast.ts
+```
+
+The host firewall must allow the group's UDP port (`sudo ufw allow
+1234/udp`) — without it the receiver fails silently. The Config tab's
+Streaming section shows a green/red **multicast** indicator right of
+the section title — **what it is for**: whether the *kernel side* is
+multicast-capable, the prerequisite for receiving a multicast group
+source at all. At process start (once per process, cached — also in
+`GET /v1/env` and the container log) fass runs `ip link show` over
+every container interface: green **multicast enabled** when at least
+one interface carries the MULTICAST flag, red **multicast disabled**
+when none, a neutral note when it cannot be determined. Linux sets the
+flag by default, so it stays green in bridge mode too — what actually
+makes the host's groups reachable is host network mode + the host
+firewall, as above. Full setup, the sender example and the compose
+tweaks:
+[docker/README.md — Multicast](docker/README.md#multicast-host-network-mode).
+
+**RIST input/output** — the base image's ffmpeg speaks `rist://`
+natively (ffmpeg 9.0.2 + librist 0.2.20, built into
+`boris271142/ffmpeg-sm_75_120`). A working send/receive pair, verified
+end-to-end (8 s of
+1280x720 H.264, 4.7 MB received, loopback):
+
+```sh
+# 1 · receiver FIRST — the @ switches the URL to a listening socket
+ffmpeg -i "rist://@0.0.0.0:5000?rist_profile=main" \
+  -map 0 -c copy received.ts
+
+# 2 · sender (second shell — docker exec -it fass bash)
+ffmpeg -re -f lavfi -i "testsrc2=size=1280x720:rate=30" \
+  -c:v libx264 -preset veryfast -tune zerolatency \
+  -pix_fmt yuv420p -g 30 \
+  -f mpegts \
+  "rist://127.0.0.1:5000?rist_profile=main"
+```
+
+- **Start the receiver first** — the `@` before the host marks a
+  *listening* socket (no `@` = connect to a remote). A sender that
+  starts first finds nothing to handshake with; receiver, then sender.
+- **`?rist_profile=main` is a no-op** — main is librist's built-in
+  default profile, and `rist_profile` is NOT a librist URL parameter:
+  the session runs identically without it, with a benign
+  `Unknown or invalid parameter rist_profile` line on stderr (librist
+  parses the URL query itself and warns about what it doesn't know).
+- **The reader never self-terminates** — when the sender stops, the
+  main-profile session times out ("Session Timeout after 2s of no
+  data") but the read loop keeps polling with a frozen frame count;
+  stop the reader explicitly (Ctrl-C / kill).
+- **The sender's final error is cosmetic** — at teardown it exits
+  non-zero with `Error closing file: Generic error in an external
+  library`; every frame was already delivered.
+- **Read without saving** —
+  `ffmpeg -i "rist://@0.0.0.0:5000?rist_profile=main" -f null -`; the
+  running `frame=` / `time=` stats are the proof the stream flows.
+- **Verbose librist logs** — librist's INFO level maps to ffmpeg's
+  VERBOSE, so `-loglevel verbose` is what shows the session lines; the
+  `Failed to set data output thread to RR scheduler with prio of 99`
+  warning is benign (no `CAP_SYS_NICE` in the container).
+- **In fass itself** — `rist://` is on the stream-URL allowlist: a
+  `rist://` URL works in the FFmpeg tab's Input / Output fields and in
+  Enter mode (a stream destination fixes the container to mpegts,
+  like every other live scheme). Cross-host, the port is plain UDP —
+  expose it in the compose file.
 ## Safety
 
 - argv arrays only — model output is schema-validated, the builder emits
