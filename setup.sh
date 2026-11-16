@@ -174,6 +174,7 @@ fi
 # and its images are kept (a fallback).
 OLD_IDS=()
 OLD_NAMES=()
+MY_NAMES=()
 while read -r id name; do
   [[ -n "$id" ]] || continue
   name="${name%%,*}"
@@ -182,7 +183,7 @@ while read -r id name; do
     *) continue ;;
   esac
   wdir="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null || true)"
-  [[ "$wdir" == "$DIR" ]] && continue
+  [[ "$wdir" == "$DIR" ]] && { MY_NAMES+=("$name"); continue; }
   OLD_IDS+=("$id")
   OLD_NAMES+=("$name")
 done < <(docker ps -a --format '{{.ID}} {{.Names}}')
@@ -276,10 +277,12 @@ done
 
 # --- port availability -------------------------------------------------------
 # The stack publishes the web UI on 8000 and the fass-http sidecar on
-# $HTTP_PORT (fass-rag stays internal). The old fass containers are gone by
-# now; whatever STILL holds one of these ports is not fass and is NEVER
-# killed by this script — the sidecar port can be moved, the UI port is
-# fixed at 8000.
+# $HTTP_PORT (fass-rag stays internal). Old-install containers are gone by
+# now; containers of THIS install dir (an in-place re-run — the normal
+# update path) are in $MY_NAMES and are not blockers: compose reconciles
+# them. Whatever ELSE still holds one of these ports is not fass and is
+# NEVER killed by this script — the sidecar port can be moved, the UI port
+# is fixed at 8000.
 port_in_use() {
   if command -v ss >/dev/null 2>&1; then
     ss -tlnH "sport = :$1" 2>/dev/null | grep -q .
@@ -287,7 +290,17 @@ port_in_use() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
   fi
 }
-port_docker_owner() { docker ps --filter "publish=$1" --format '{{.Names}}' 2>/dev/null | head -n 1; }
+# First holder of the port that is not a container of this install
+# ($MY_NAMES) — our own stack is not a blocker.
+port_docker_owner() {
+  local n
+  for n in $(docker ps --filter "publish=$1" --format '{{.Names}}' 2>/dev/null); do
+    case " ${MY_NAMES[*]:-} " in
+      *" $n "*) continue ;;
+      *) echo "$n"; return 0 ;;
+    esac
+  done
+}
 
 for P in 8000 "$HTTP_PORT"; do
   port_in_use "$P" || continue
