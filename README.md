@@ -60,7 +60,13 @@ healthy server on the port is left running.
 
 `./setup.sh` — interactive one-time install (host folders, LLM endpoint,
 http stream port, GPU pin); it pulls `boris271142/fass` and starts the
-stack → http://127.0.0.1:8000. See [Docker deployment](#docker-deployment).
+stack → http://127.0.0.1:8000. On a machine where an older fass install
+already runs, it finds the old containers and asks: remove them and
+upgrade, or quit — `./setup.sh --upgrade` answers "remove" up front
+(only the containers go; the old config/media folders and images are
+kept). A port held by a program that is not fass is never touched: the
+http sidecar port can be moved (`--http-port`), the web UI port (8000)
+is fixed. See [Docker deployment](#docker-deployment).
 
 Every request returns one of four structured outcomes — `ready`,
 `needs_clarification`, `unsupported`, `error`. Ambiguity is a first-class
@@ -812,6 +818,8 @@ Apache sidecar for HLS/DASH stream runs — up with one script:
 ```bash
 ./setup.sh                  # interactive: folders, LLM endpoint, ports, GPU
                             # → http://<host>:8000
+./setup.sh --upgrade        # an older fass install runs here: remove its
+                            # containers (the upgrade) without asking
 ./scripts/web.sh            # start / pull / restart / stop / status / logs
 ```
 

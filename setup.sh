@@ -11,6 +11,9 @@
 #   ./setup.sh --yes --llm http://192.168.0.9:8080 --timeout 30
 #   ./setup.sh --yes --http-port 9090           # the http stream sidecar port
 #   ./setup.sh --yes --gpu-pin 1                # fass's ffmpeg on GPU 1
+#   ./setup.sh --upgrade                        # an older fass install is on
+#                                               # the machine: remove its
+#                                               # containers instead of asking
 #
 # Linux only: Windows and macOS are not supported — the deployment is a
 # Linux Docker stack with the NVIDIA runtime. setup.sh refuses to start
@@ -106,6 +109,7 @@ TIMEOUT_SET=0
 HTTP_PORT=8080
 GPU_PIN="${FASS_GPU_PIN:-0}"
 ASSUME=0
+UPGRADE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -118,8 +122,9 @@ while [[ $# -gt 0 ]]; do
     --timeout) LLM_TIMEOUT="$2"; TIMEOUT_SET=1; shift 2 ;;
     --http-port) HTTP_PORT="$2"; shift 2 ;;
     --gpu-pin)  GPU_PIN="$2"; shift 2 ;;
+    --upgrade) UPGRADE=1; shift ;;
     -y|--yes) ASSUME=1; shift ;;
-    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -153,6 +158,65 @@ if [[ $GPU -eq 1 ]]; then
   if (( GPU_PIN > 0 )); then GPU_CVD=1; else GPU_CVD=0; fi
 else
   GPU_CVD=0
+fi
+
+# --- existing fass install (upgrade detection) ------------------------------
+# The stack uses FIXED container names (the compose container_name values):
+# fass, fass-worker, fass-rag, fass-http — plus the project-prefixed
+# spellings source-tree deployments produce (docker-fass-rag-1, ...). An
+# install from ANOTHER directory therefore collides with this one even while
+# it is stopped: `up` would fail on the published ports or silently
+# resurrect the old stopped containers. Containers started from THIS
+# directory are our own (an in-place re-install) — compose handles those.
+# With --upgrade the old containers are removed without asking; otherwise
+# the script asks (remove or quit) on a tty and refuses off one.
+# Only the CONTAINERS are removed — the old install's config/media folders
+# and its images are kept (a fallback).
+OLD_IDS=()
+OLD_NAMES=()
+while read -r id name; do
+  [[ -n "$id" ]] || continue
+  name="${name%%,*}"
+  case "$name" in
+    fass|fass-worker|fass-rag|fass-http|docker-fass-rag-1|docker-fass-worker-1|docker-fass-http-1) ;;
+    *) continue ;;
+  esac
+  wdir="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null || true)"
+  [[ "$wdir" == "$DIR" ]] && continue
+  OLD_IDS+=("$id")
+  OLD_NAMES+=("$name")
+done < <(docker ps -a --format '{{.ID}} {{.Names}}')
+
+if (( ${#OLD_IDS[@]} > 0 )); then
+  remove_old() {
+    echo "removing the old fass install — containers: ${OLD_NAMES[*]}"
+    echo "kept: its config/media folders and the old images (only the containers go)"
+    docker rm -f "${OLD_IDS[@]}"
+  }
+  if (( UPGRADE )); then
+    echo "upgrade mode: an older fass install is on this machine"
+    remove_old
+  elif [[ -t 0 ]]; then
+    echo
+    echo "an older fass installation is already on this machine:"
+    for id in "${OLD_IDS[@]}"; do
+      echo "  - $(docker ps -a --no-trunc --filter "id=$id" --format '{{.Names}} ({{.State}})')"
+    done
+    printf 'Remove the old fass containers and upgrade, or quit? [u]pgrade / [q]uit [q]: '
+    read -r ans || ans="q"
+    case "${ans:-q}" in
+      [uU]|[yY]*|upgrade) remove_old ;;
+      *)
+        echo "quitting — the old fass install was left untouched." >&2
+        exit 1 ;;
+    esac
+  else
+    echo "error: an older fass installation is on this machine (containers: ${OLD_NAMES[*]})" >&2
+    echo "and its containers collide with this install." >&2
+    echo "Re-run with --upgrade to remove the old fass containers and install the new" >&2
+    echo "version (config/media folders and old images are kept), or remove them by hand." >&2
+    exit 1
+  fi
 fi
 
 CFGJSON="$CONFIG/config.json"
@@ -209,6 +273,50 @@ for p in "$INPUT" "$OUTPUT" "$LOG" "$CONFIG"; do
 done
 [[ "$HTTP_PORT" =~ ^[0-9]+$ ]] && [[ "$HTTP_PORT" -ge 1 && "$HTTP_PORT" -le 65535 ]] \
   || { echo "http stream port must be a number 1-65535: $HTTP_PORT" >&2; exit 2; }
+
+# --- port availability -------------------------------------------------------
+# The stack publishes the web UI on 8000 and the fass-http sidecar on
+# $HTTP_PORT (fass-rag stays internal). The old fass containers are gone by
+# now; whatever STILL holds one of these ports is not fass and is NEVER
+# killed by this script — the sidecar port can be moved, the UI port is
+# fixed at 8000.
+port_in_use() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnH "sport = :$1" 2>/dev/null | grep -q .
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+  fi
+}
+port_docker_owner() { docker ps --filter "publish=$1" --format '{{.Names}}' 2>/dev/null | head -n 1; }
+
+for P in 8000 "$HTTP_PORT"; do
+  port_in_use "$P" || continue
+  owner="$(port_docker_owner "$P")"
+  if [[ -n "$owner" ]]; then
+    echo "error: port $P is held by the container '$owner' — it is not part of a fass install." >&2
+    echo "Stop it (docker stop $owner) and re-run setup.sh." >&2
+    exit 1
+  fi
+  if [[ "$P" == 8000 ]]; then
+    echo "error: port 8000 (the fass web UI) is in use by another program — stop it and re-run setup.sh." >&2
+    exit 1
+  fi
+  if [[ -t 0 ]] && (( ASSUME == 0 )); then
+    while :; do
+      printf "port $P (the http stream sidecar) is in use by another program — new port [$((P + 1))]: "
+      read -r np || { echo "quitting." >&2; exit 1; }
+      np="${np:-$((P + 1))}"
+      [[ "$np" =~ ^[0-9]+$ ]] || { echo "  that is not a number"; continue; }
+      if port_in_use "$np"; then echo "  $np is taken too"; continue; fi
+      HTTP_PORT="$np"
+      break
+    done
+  else
+    echo "error: port $P (the http stream sidecar) is in use by another program." >&2
+    echo "Re-run with --http-port <a free port>." >&2
+    exit 1
+  fi
+done
 
 # host:port from the URL (scheme/path stripped, missing port = 8080)
 LLM_HOST="$(printf '%s' "$LLM_URL" | sed -e 's|^[a-zA-Z]*://||' -e 's|/.*||' -e 's|:.*||')"
