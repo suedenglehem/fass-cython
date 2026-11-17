@@ -177,9 +177,12 @@ The workhorse: a natural-language request in, a validated command out.
   the log lands in the output folder's `log/`), and *serve over http*
   (write the output into the http sidecar tree so the **Player** tab can
   play it — HLS / DASH, m3u8 / mpd). *preflight* and *verbose log* are
-  **recorded in the run record** when the run starts and **restored from
-  the newest run at page boot** — they persist between runs and across
-  restarts (server-side, so the state is the same on every client).
+  **checked by default** — a fresh install's first run goes out with
+  both on — and are **recorded in the run record** when the run starts
+  and **restored from the newest run at page boot**: from the second run
+  on, the pane shows the state the last run went out with (server-side,
+  so the state is the same on every client). Clear returns them to the
+  default, not to off.
 - **Generate** — runs the pipeline; the result pane renders per status:
   - **ready** (green) — an editable **Command** textarea with a copy
     button, the **argument array** (shell-safe JSON), **What it does**,
@@ -529,6 +532,33 @@ Sections, top to bottom:
   and the config is re-read per request, so toggling takes effect
   immediately, no Apply. Key ticker off (or a blank key) = the API
   stays open, exactly as before.
+
+  ![Config tab (full-tab shot) — the API key section carries the API/MCP master ticker and the fass api key field](screenshots/Config.png)
+- **DB, settings and runs** — the **PostgreSQL** mirror of the settings
+  and the whole Runs-tab history: **db ip / host** (default
+  `fass-db` — the compose database service), **port** (5432),
+  **user name** / **password** (both default `ffmpeg`), and
+  **database name** (default `ffmpeg_assisstant`). **check
+  connection** pings the server and reports the tables found, the
+  schema version, and the registered workers; **reset** is for after a
+  db configuration change (new host / user / password / database): it
+  reconnects without a restart, creates the schema when it is missing,
+  re-seeds an empty database from the files, and registers this worker.
+  The status line under the buttons is updated by the UI's 20 s poll.
+  Storage semantics: the files stay the **primary** store — every
+  setting change and every run record (its log included) is
+  **dual-written** to the database; a lost database never blocks or
+  loses anything, it only raises the health warning (the popup and the
+  strip under the tabs, like a lost LLM). At startup the one-shot
+  bootstrap connects, creates the schema (versioned in a
+  `schema_version` table, for future migrations), seeds an empty
+  database from the existing files, and registers this fass as a
+  worker: each fass docker instance has a stable random **worker id**
+  (a UUID persisted beside the config file, surviving container
+  recreates), every job records the worker that submitted it and the
+  **fass version** that submitted it, and the default role is
+  `master+worker` — a fass docker may behave as master (the UI/API),
+  as worker (executing jobs), or both.
 - **Appearance** — theme (auto / light / dark "night" / kitty "pink" /
   autodesk "gray") and content width (default 1260 px / narrower
   860 px); remembered per browser.
@@ -722,7 +752,7 @@ of every encoder, filter and bitstream filter the registry references
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/env
-# → {"available": true, "version": "v1.618033.738dce2",
+# → {"available": true, "version": "v1.618033.6638fa2",
 #    "registry_version": "2.12.0",
 #    "encoders": {"video:libx264": {"encoder": "libx264", "present": true}, …},
 #    "filters": {"scale_cuda": {"present": true}, …}, …}

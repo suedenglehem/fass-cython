@@ -55,6 +55,7 @@ container). A `-i <file>` prefix is accepted everywhere a filename is taken.
 14. [Media serving](#14-media-serving)
 15. [Run logs](#15-run-logs)
 16. [UI](#16-ui)
+17. [Database (PostgreSQL)](#17-database-postgresql)
 
 ---
 
@@ -306,6 +307,10 @@ any other keyword in the command; blank / whitespace-only is a no-op.
 One run record: argv, status, exit, timestamps (`started`, and `finished` —
 stamped when the run leaves `running`), log path, stream path (if it writes
 a playlist), output file, and the recorded `verbose` / `preflight` flags.
+Every record also carries `worker_id` (the fass docker instance that
+submitted the job — a stable random UUID persisted beside the config file)
+and `fass_version` (the fass version that submitted it). Records created
+before these fields existed carry `null`.
 
 ### `GET /v1/runs/{run_id}/log`  *(text/plain)*
 
@@ -594,7 +599,9 @@ curl -s -X POST http://localhost:8000/v1/rag/query \
 
 The saved config (`config`), its `path`, the generated compose preview
 (`compose`), the LLM/docker status, per-volume folder presence on the host
-(`volumes_status`), and the encode card + free VRAM (`gpu_card`).
+(`volumes_status`), the encode card + free VRAM (`gpu_card`), and the
+current database status (`db_status` — `{ok, detail, schema_version}`,
+the same shape as `GET /v1/db/ping`).
 
 ### `PUT /v1/config`
 
@@ -733,6 +740,69 @@ plotly come from `/static/`, no CDN).
 Fixed allowlist only: `shaka-player.compiled.js` (shaka-player 5.3.2) and
 `plotly.min.js` (plotly.js 3.0.1). Anything else → 404 (no directory
 browsing).
+
+---
+
+## 17. Database (PostgreSQL)
+
+The PostgreSQL mirror of the settings and the whole Runs-tab history
+(schema: `schema_version`, `settings`, `runs`, `run_logs`, `workers`).
+The files stay the **primary** store — every setting change and every run
+record is dual-written to the database; a lost database never blocks or
+loses anything, so all three endpoints are **fail-open: always 200, with
+`ok: false` and a `detail` explaining why** when the database is down or
+unconfigured. They live under `/v1/*`, so with the **API/MCP** master
+switch off they 404 like every other API route.
+
+The connection parameters (host, port, user, password, database name)
+are the Config tab's **DB, settings and runs** section — part of the
+normal `config` object, saved with the rest of it by `PUT /v1/config`.
+
+### `GET /v1/db/ping`
+
+The 20 s UI health poll (the `/v1/llm/ping` pattern): a cheap connect +
+`SELECT 1`. `ok: false` drives the "database down" warning — the UI applies
+the same transition logic as the LLM one (popup on first-load-down and every
+up→down, silent recovery).
+
+```json
+{"ok": true, "detail": "connected to ffmpeg_assisstant@fass-db:5432 as ffmpeg",
+ "schema_version": 1}
+```
+
+### `POST /v1/db/check`
+
+The Config tab's **check connection** button: a fresh probe plus what is
+actually in the database — the tables present, the applied schema version,
+the registered worker count.
+
+```json
+{"ok": true,
+ "detail": "connected to ffmpeg_assisstant@fass-db:5432 as ffmpeg",
+ "tables": {"schema_version": true, "settings": true, "runs": true,
+            "run_logs": true, "workers": true},
+ "schema_version": 1, "workers": 1}
+```
+
+### `POST /v1/db/reset`
+
+The Config tab's **reset** button — for after a db configuration change
+(new host / user / password / database): reconnects with the saved config
+without a restart, creates the schema when it is missing, seeds an empty
+database from the existing files, and re-registers this fass as a worker.
+The UI shows the returned `detail` on its status line.
+
+```json
+{"ok": true,
+ "detail": "reconnected to ffmpeg_assisstant@fass-db:5432 as ffmpeg",
+ "seeded": {"settings": 0, "runs": 0, "logs": 0}}
+```
+
+`seeded` is `null` when there was nothing to do (schema present and
+populated). When the database is down, all three return `ok: false` with
+the connection error in `detail`; when psycopg2 is not installed (file-only
+development runs) `check` / `reset` report
+`"psycopg2 not installed (file-only mode)"`.
 
 ---
 
