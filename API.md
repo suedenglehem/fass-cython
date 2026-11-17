@@ -18,15 +18,19 @@ sidecars reach it on `http://fass:8000`).
   `FASS_ALLOW_EXECUTE=1` (the docker image sets it; a bare `fass serve` does
   not). Generation, file listing, config, … always work.
 - **No authentication by default; an optional API key can lock the
-  control API.** Out of the box, every `/v1/*` endpoint — including the
-  ones that execute ffmpeg and rewrite the deployment config — is open to
-  anyone who can reach port 8000. The Config tab's **API key** section
+  control API, and an API/MCP master switch can take it down.** Out of
+  the box, every `/v1/*` endpoint — including the ones that execute
+  ffmpeg and rewrite the deployment config — is open to anyone who can
+  reach port 8000. The Config tab's **API key** section
   ([Config & self-management](#11-config--self-management)) can require
-  `Authorization: Bearer <key>` on every `/v1/*` call (401 otherwise);
-  the page, `/static`, `/media` and `/keys` routes stay open — they serve
-  the player, they are not the control API. Either way, run fass on a
-  trusted network, or put an authenticating proxy (reverse proxy with
-  token/OAuth) in front of it. Bind address: `fass serve --host/--port`.
+  `Authorization: Bearer <key>` on every `/v1/*` call (401 otherwise),
+  and its **API/MCP** master ticker can switch the whole API off —
+  every `/v1/*` route then answers 404 (API-absent) and `fass mcp`
+  refuses to start. The page, `/static`, `/media` and `/keys` routes
+  stay open either way — they serve the player, they are not the
+  control API. Either way, run fass on a trusted network, or put an
+  authenticating proxy (reverse proxy with token/OAuth) in front of it.
+  Bind address: `fass serve --host/--port`.
 
 File names in the examples below are *bare basenames* of the deployment
 volumes (`$FASS_INPUT_DIR` / `$FASS_OUTPUT_DIR`, `/input` `/output` in the
@@ -56,17 +60,43 @@ container). A `-i <file>` prefix is accepted everywhere a filename is taken.
 
 ## Authentication (API key)
 
-The Config tab's **API key** section (between RAG and Appearance) can
-lock the entire control API. It has two controls: the **enable api key**
-ticker and the **fass api key** field — at least **16 characters** when
-enabled (a shorter/blank key with the ticker on is rejected: 422 on
+The Config tab's **API key** section (between RAG and Appearance)
+carries the control API's two switches: the **API/MCP** master ticker
+(to the left of the key field) and the **enable api key** ticker +
+**fass api key** field — at least **16 characters** when enabled (a
+shorter/blank key with the ticker on is rejected: 422 on
 `PUT /v1/config`, "Save refused" in the UI).
 
-**Scope — only the control API.** With the ticker on, every `/v1/*`
-route requires the key. The web page (`/`), `/static/`, `/media/` and
-`/keys/` are content serving for the player and stay open, and
-`GET /healthz` stays open as a liveness probe. With the ticker off —
-the default — the API is open exactly as before.
+**The API/MCP master switch.** Off, the entire control API is gone:
+every `/v1/*` route answers **404** — API-absent, the API looks
+unmapped, not locked, for anything scanning it (404 beats 401 even with
+a valid key):
+
+```
+HTTP/1.1 404 Not Found
+
+{"detail": "the fass api is disabled (api_mcp_enabled=false in the config)"}
+```
+
+`fass mcp` refuses to start (error on stderr, exit 1). The web page
+(`/`), `/static/`, `/media/`, `/keys/` and `GET /healthz` stay open. The
+switch is **on by default** (a config file without the field behaves as
+on), is re-read per request, and — because the API is the only writer
+of the config — **can only be re-enabled by editing the config file on
+the server**: with it off, even `PUT /v1/config` is 404. The web UI
+shows a banner with the re-enable instruction when it sees the 404
+detail.
+
+| field               | type | default | meaning                                                            |
+|---------------------|------|---------|--------------------------------------------------------------------|
+| `api_mcp_enabled`   | bool | `true`  | when `false`, every `/v1/*` route is 404 and `fass mcp` won't start |
+
+**Scope — only the control API.** With the master switch on and the key
+ticker on, every `/v1/*` route requires the key. The web page (`/`),
+`/static/`, `/media/` and `/keys/` are content serving for the player
+and stay open, and `GET /healthz` stays open as a liveness probe. With
+the key ticker off — the default — the API is open exactly as before
+(while the master switch is on).
 
 **Transport.** The key is a credential, sent as a Bearer token:
 
@@ -124,6 +154,11 @@ curl -s -i http://localhost:8000/v1/streams | sed -n '1p'
 # the page and its content stay open
 curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8000/healthz
 # 200
+
+# master switch off — the API is gone, so it is the config FILE that
+# changes ("api_mcp_enabled": false), not the API:
+curl -s -i http://localhost:8000/v1/streams | sed -n '1p'
+# HTTP/1.1 404 Not Found
 ```
 
 ---

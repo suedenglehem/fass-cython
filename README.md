@@ -477,19 +477,29 @@ Sections, top to bottom:
   "RAG disabled" / "service unreachable (fail-open)". (The LLM answer
   appended to a RAG-tab search has its own **rag** thinking ticker —
   see LLM provider.)
-- **API key** — an optional key protecting the control API (see
-  [HTTP API](#http-api)): the **enable api key** ticker and the
-  **fass api key** field (at least 16 characters when enabled). With
-  the ticker on, every `/v1/*` call must send
-  `Authorization: Bearer <key>` — anything else gets 401. The web page
-  itself stays open (it is content serving for the player, not the
-  control API): it keeps the key in the browser, sends it automatically
-  with every API call, and pops a key-entry banner at the top when a
-  401 comes back. The key follows the LLM API key precedent — returned
-  clear by `GET /v1/config`, masked by the UI — and the config is
-  re-read per request, so toggling the ticker takes effect immediately,
-  no Apply. Ticker off (or a blank key) = the API stays open, exactly
-  as before.
+- **API key** — the control API's two switches (see
+  [HTTP API](#http-api)): the **API/MCP** ticker (to the left of the key
+  field) is the **master switch** for the whole control API *and* the
+  `fass mcp` server — off, every `/v1/*` call answers **404** (the API
+  looks unmapped, not locked, for anything scanning it), `fass mcp`
+  refuses to start, and since the web UI itself runs on the API it stops
+  working too; the page, `/static`, `/media`, `/keys` and `/healthz`
+  routes stay open, and a banner explains how to get back: set
+  `"api_mcp_enabled": true` in the config file on the server — the API
+  is the only writer, so with it off even `PUT /v1/config` is 404 and
+  the switch cannot re-enable itself. On by default (a config file
+  without the field behaves as on). With the switch on, the
+  **enable api key** ticker + **fass api key** field (at least 16
+  characters when enabled) additionally require
+  `Authorization: Bearer <key>` on every `/v1/*` call — anything else
+  gets 401. The web page itself stays open (it is content serving for
+  the player, not the control API): it keeps the key in the browser,
+  sends it automatically with every API call, and pops a key-entry
+  banner at the top when a 401 comes back. The key follows the LLM API
+  key precedent — returned clear by `GET /v1/config`, masked by the UI —
+  and the config is re-read per request, so toggling takes effect
+  immediately, no Apply. Key ticker off (or a blank key) = the API
+  stays open, exactly as before.
 - **Appearance** — theme (auto / light / dark "night" / kitty "pink" /
   autodesk "gray") and content width (default 1260 px / narrower
   860 px); remembered per browser.
@@ -596,8 +606,10 @@ Every domain outcome is a structured **200** with a
 for malformed requests. There is **no authentication by default** —
 anyone who can reach port 8000 can generate commands, execute them and
 rewrite the deployment config — but the Config tab's **API key**
-section (before Appearance) can lock the control API: with the
-**enable api key** ticker on, every `/v1/*` call must carry
+section (before Appearance) carries two switches: the **API/MCP**
+master ticker — off, every `/v1/*` call answers 404 (API-absent: the
+API looks unmapped, not locked) and `fass mcp` refuses to start — and
+the **enable api key** ticker — on, every `/v1/*` call must carry
 `Authorization: Bearer <key>` (the key is at least 16 characters) or
 gets 401, while the page, `/static`, `/media` and `/keys` routes stay
 open for the player. Either way, run fass on a trusted network or
