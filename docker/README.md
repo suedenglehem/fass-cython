@@ -2,7 +2,7 @@
 
 The published image **`boris271142/fass`** (Docker Hub): fass compiled
 with Cython, packaged together with FFmpeg 9.0 + NVIDIA hardware
-acceleration (base `jrottenberg/ffmpeg:9.0-nvidia2404`), plus the
+acceleration (base `boris271142/ffmpeg-sm_75_120:latest`), plus the
 **`boris271142/fass-rag`** retrieval image. The stack is four
 containers — `fass` (web UI + API, GPU), `fass-worker` (the Apply
 sidecar, same image), `fass-rag` (the lexical RAG retriever, see
@@ -23,7 +23,11 @@ host folder ──(volume)──▶ /config   config.json (the Config tab reads/
 ## Host requirements
 
 - Docker (with the `nvidia` runtime: NVIDIA driver + `nvidia-container-toolkit`)
-- an NVIDIA GPU (for GPU encoding; the image is `nvidia2404`-flavoured anyway)
+- an NVIDIA GPU (for GPU encoding)
+- the FFmpeg 9.0.2 in the published image is rebuilt with CUDA
+  sm_75…sm_120, libvmaf with CUDA, and RIST (the main README's
+  [Docker deployment](../README.md#docker-deployment) section covers
+  the supported card generations)
 
 The image is a **deployment** build: `FASS_ALLOW_EXECUTE=1` is baked in, so
 only run it where you want fass to execute FFmpeg. (The compiled CLI wheel
@@ -87,7 +91,8 @@ tab afterwards.
 
 ## The Config tab
 
-`GET/PUT /v1/config` behind the UI. Four sections:
+`GET/PUT /v1/config` behind the UI. The deployment-relevant sections
+(the tab also carries Shaka player, RAG, API key and Appearance):
 
 The bottom of the tab prints the deployment's identity: the container's
 ffmpeg build line (first line of `ffmpeg -version`, lib* versions
@@ -126,11 +131,17 @@ automatically (the UI paths stay simple).
 **Receiving a stream** (camera → fass): map e.g. `5000:5000/udp`; the camera
 pushes to `<host-ip>:5000`; the instruction can say "from the stream on
 `udp://host:5000`" and fass binds `udp://0.0.0.0:5000` inside the container.
+RIST rides the same UDP-port mapping — `rist://@host:5000` (`@` = a
+*listening* socket: fass is the receiver and must start FIRST, the camera
+connects after); operational details (reader never self-terminates, the
+sender's cosmetic teardown error) in the main README's [Docker
+deployment — RIST input/output](../README.md#docker-deployment) section.
 
 **Sending a stream** (fass → elsewhere): map e.g. `9000:9000/tcp` (srt) or
 `1935:1935/tcp` (rtmp); "stream it to `srt://host:9000/stream`" becomes
 `srt://172.17.0.1:9000/stream` inside the container — but an *external*
-client reaches it on `<host-ip>:9000`.
+client reaches it on `<host-ip>:9000`. A `rist://host:9001` destination
+behaves the same (the remote side's receiver runs first).
 
 ### GPU
 
@@ -167,6 +178,30 @@ always available as fallback and needs nothing):
 **Test LLM** button: sends a one-word probe through the real request path
 (`POST /v1/config/llm-test`) and shows the reply + latency, using the values
 in the form (no need to save first).
+
+### API key and API/MCP switch
+
+There is **no authentication by default** — anyone who can reach port 8000
+can generate commands, execute them and rewrite the config; run fass on a
+trusted network or behind an authenticating proxy. The tab's **API key**
+section (before Appearance) carries two switches, both live (per-request
+config re-read, no restart):
+
+- **API/MCP** (the master ticker, left of the key field) — off, every
+  `/v1/*` call answers **404** with the "api is disabled" detail
+  (API-absent: the API looks unmapped, not locked) and `fass mcp` refuses
+  to start. The switch cannot re-enable itself — with the API off even
+  `PUT /v1/config` is 404, so re-enabling is a `config.json` edit
+  (`api_mcp_enabled`); the served page shows a banner explaining that.
+  The disabled check runs before the key gate, so even a valid Bearer key
+  gets 404 while it is off.
+- **enable api key** — on, every `/v1/*` call must carry
+  `Authorization: Bearer <key>` (key ≥ 16 characters) or gets **401** +
+  `WWW-Authenticate: Bearer` (a banner in the page asks for the key). The
+  page, `/static`, `/media` and `/keys` routes stay open for the player,
+  and `GET /healthz` stays open as a liveness probe.
+
+Both off (the default) = the open API.
 
 ### Apply
 
@@ -383,6 +418,13 @@ up -d` brings it up together with fass.
   the same file overwrites its own tree, different files never
   collide, and the Player tab shows the stream **live** while its
   encoding run is in flight.
+- The FFmpeg tab's **play2** (live side-by-side HLS, run through
+  `bash /opt/play2/sbs_hls_{cpu,nvidia}.sh`) uses the sidecar too: a
+  fixed stream tree `{output}/http/play2/` — wiped and recreated on
+  every start, `http/play2/stream.m3u8` **live** in the Player tab while
+  the run runs (stop = process-group kill; stopping it in the Player tab
+  flips the FFmpeg tab's play2 toggle back). Full spec: the main README's
+  [play2](../README.md#play2--live-side-by-side-sbs-hls) section.
 - `GET /v1/streams` lists the playlists found under the output
   volume's `http/` subdir (`.m3u8` → kind `hls`, `.mpd` → kind `dash`),
   newest first, each with its full URL — built from the config's
