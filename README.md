@@ -176,7 +176,10 @@ The workhorse: a natural-language request in, a validated command out.
   [Preflight](#preflight)), *verbose log* (`-loglevel verbose`;
   the log lands in the output folder's `log/`), and *serve over http*
   (write the output into the http sidecar tree so the **Player** tab can
-  play it — HLS / DASH, m3u8 / mpd).
+  play it — HLS / DASH, m3u8 / mpd). *preflight* and *verbose log* are
+  **recorded in the run record** when the run starts and **restored from
+  the newest run at page boot** — they persist between runs and across
+  restarts (server-side, so the state is the same on every client).
 - **Generate** — runs the pipeline; the result pane renders per status:
   - **ready** (green) — an editable **Command** textarea with a copy
     button, the **argument array** (shell-safe JSON), **What it does**,
@@ -296,6 +299,9 @@ for the context menu:
   Input field;
 - **to input** (output pane) — copies the file into the input volume
   (the output original is kept) so it can become an input;
+- **clipboard** (both panes) — copies the bare filename to the
+  clipboard — paste it into the Info / Log tab's *File* field or
+  anywhere else;
 - **ffprobe** / **mediainfo** — opens the metadata in Info / Log;
 - **tsanalyze** — TS containers only (`.ts` / `.mpg` / `.mpeg` / `.ps`);
   jumps to Info / Log and runs;
@@ -314,10 +320,17 @@ for the context menu:
 ### Runs tab — executed commands
 
 The executed-command table (id, started, status, exit, command, output,
-actions) with **↻ refresh**:
+actions). On the header line, at the right margin: a **search field**
+(filters the *command* column by keyword — case-insensitive, server-side
+— mostly by input or output file name, but anything in the command
+works; 250 ms debounce, and the 2.5 s auto-refresh keeps the filter in
+place), a small **clear** button (removes the filter and shows the whole
+list), and **↻ refresh**:
 
-- status badges — **success** (green), **running** (amber; the table
-  polls every 2.5 s while a run is in flight), **failed** (red);
+- status badges — **success** (green — with the total run time,
+  `finished − started` wall clock, right under the word), **running**
+  (amber; the table polls every 2.5 s while a run is in flight),
+  **failed** (red);
 - **output** — a link: http-served runs go to the **Player** tab,
   ordinary runs to the raw file;
 - **log** — the run's log inline; **stop** — kills a running command.
@@ -390,7 +403,15 @@ Sections, top to bottom:
 - **Volumes — host folders ↔ container** — the host folders behind
   `/input`, `/output`, `/log`, `/scores`, each with an optional
   **remote mapping** (FTP / SFTP / SCP / S3 bucket —
-  `ftplib`, paramiko, boto3; install the `[storage]` extra):
+  `ftplib`, paramiko, boto3; install the `[storage]` extra). At the
+  right end of this header line is the **show more** ticker
+  (persists per browser): while it is off, the tab's **advanced
+  options** stay hidden — tick it on and they appear. The advanced
+  options it gates are: the **remote mappings** below, the **min free
+  disk space** and **output overwrite (`-y`)** rows, the LLM provider's
+  **thinking modes**, and the whole **Streaming — port mappings**,
+  **Shaka player**, **GPU (NVIDIA)** and **API key** sections. The
+  mapping's role per volume:
   - **input** — a file missing locally is *downloaded from the remote
     before use*;
   - **output** — the result file, the verbose log and the run's `http/`
@@ -411,13 +432,17 @@ Sections, top to bottom:
   30 s; when it drops below the value a warning pops up and a banner
   stays in the tab ("⚠ /output low: X.XX GB free (min Y GB)"). The same
   banner also reports the LLM being down (it pings the endpoint every
-  20 s).
+  20 s). Below that: **output file already exists → overwrite it**
+  (default off) — ticked, fass adds `-y` to a command that is missing
+  it; off, an existing output file keeps the standard "output file
+  already exists" warning.
 - **LLM provider** — `anthropic` or any OpenAI-compatible endpoint
   (strata, vLLM, …): scheme (http for local servers, https for TLS
   end-user APIs — OpenAI, DeepSeek, …), host, port (https: blank = 443),
   api key (optional for the openai provider), model, timeout (1–300 s,
   default 90), and **thinking mode** — two independent tickers
-  (openai provider — Qwen3 / strata / vLLM): **ffmpeg cmd** (command
+  (an advanced option — visible with **show more** on;
+  openai provider — Qwen3 / strata / vLLM): **ffmpeg cmd** (command
   generation + validation) and **rag** (the LLM answer on the RAG tab).
   Both **off by default** — for the structured output the reasoning
   trace is pure overhead (and can exhaust max_tokens); endpoints that
@@ -427,7 +452,8 @@ Sections, top to bottom:
   disabled (until the model is switched again); undetected leaves them
   enabled. **Test LLM (unsaved values)** reports "ok — model X answered
   in Ns: '…'" and re-runs the probe.
-- **Streaming — port mappings (host port ↔ container port)** — the
+- **Streaming — port mappings (host port ↔ container port)** (an
+  advanced option — visible with **show more** on) — the
   host-address rewrite for stream URLs: *the host in a URL → the docker
   host* (udp/rtp inputs bind 0.0.0.0 inside the container), the host
   address (docker bridge gateway, default 172.17.0.1), and per-port
@@ -442,7 +468,8 @@ Sections, top to bottom:
   Linux sets the flag by default, so it stays green in bridge mode too;
   what makes the host's groups actually reachable is host network mode
   + the host firewall — see [Multicast input/output](#docker-deployment).
-- **Shaka player** — the settings of the Player tab's player
+- **Shaka player** (an advanced option — visible with **show more**
+  on) — the settings of the Player tab's player
   (shaka-player, bundled locally — the page has no CDN dependencies).
   One row: **bitrate play file** (50–50 000 kbps, default 3 000 = the
   3M reference) — the video bitrate of the Files tab's **hls play**
@@ -463,7 +490,8 @@ Sections, top to bottom:
   it with `-decryption_key` + this key before -i — this build's dash
   format is mux-only; the MPD carries no pssh, so encrypted DASH is not
   playable in the browser).
-- **GPU (NVIDIA)** — enable nvenc (H.265, and AV1 when the GPU can
+- **GPU (NVIDIA)** (an advanced option — visible with **show more**
+  on) — enable nvenc (H.265, and AV1 when the GPU can
   encode it — H.264 stays on libx264). *Which* GPU ffmpeg uses is a
   deployment concern, pinned in the compose file with
   `CUDA_VISIBLE_DEVICES` — the container always gets **all** host GPUs,
@@ -477,7 +505,8 @@ Sections, top to bottom:
   "RAG disabled" / "service unreachable (fail-open)". (The LLM answer
   appended to a RAG-tab search has its own **rag** thinking ticker —
   see LLM provider.)
-- **API key** — the control API's two switches (see
+- **API key** (an advanced option — visible with **show more** on) —
+  the control API's two switches (see
   [HTTP API](#http-api)): the **API/MCP** ticker (to the left of the key
   field) is the **master switch** for the whole control API *and* the
   `fass mcp` server — off, every `/v1/*` call answers **404** (the API
@@ -693,7 +722,7 @@ of every encoder, filter and bitstream filter the registry references
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/env
-# → {"available": true, "version": "v1.137036.8cad5dd",
+# → {"available": true, "version": "v1.618033.738dce2",
 #    "registry_version": "2.12.0",
 #    "encoders": {"video:libx264": {"encoder": "libx264", "present": true}, …},
 #    "filters": {"scale_cuda": {"present": true}, …}, …}
@@ -1324,6 +1353,8 @@ ffmpeg -re -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   output volume — never a path outside them
 - asset URLs are limited to an allowlist of streaming schemes (`file://`,
   `ftp://`, … are rejected)
-- output never overwrites the input; `-y` is never emitted
+- output never overwrites the input; `-y` is emitted only when the
+  Config tab's "output file already exists → overwrite it" option is
+  on (default off — a standard warning is issued instead)
 
 Published at github.com/suedenglehem/fass-cython (branch main).

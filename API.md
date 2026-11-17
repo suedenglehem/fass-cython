@@ -178,7 +178,7 @@ execution is enabled, the saved GPU config, and the multicast startup check.
 
 ```sh
 curl -s http://localhost:8000/v1/env | jq '{version, available, execution, multicast}'
-# {"available": true, "execution": true, "multicast": {"ok": true}, "version": "1.137036.3ed666e"}
+# {"available": true, "execution": true, "multicast": {"ok": true}, "version": "1.618033.738dce2"}
 ```
 
 ### `GET /v1/support`
@@ -276,7 +276,8 @@ Execute an argv. Body:
 | `command` | expert override: the edited command string, shlex-split server-side and through the same validation gate |
 | `steps` | multi-pass plan: every pass's argv in execution order, final pass last; `arguments` must equal `steps[-1]` |
 | `timeout` | optional wall-clock limit, seconds (≤ 86400; with `steps` it applies per step) |
-| `verbose` | log to `{output}/log/` |
+| `verbose` | log to `{output}/log/` (recorded in the run record; the UI restores it from the newest run at page boot) |
+| `preflight` | run the preflight validation against the local FFmpeg build first (default `false`; recorded in the run record and restored like `verbose`) |
 | `serve_http` | output goes to the fass-http sidecar: the playlist is placed in the per-run dir `{output}/http/<run-id>/` |
 | `instruction` | recorded in the run-log footer so the log is self-describing |
 
@@ -292,15 +293,19 @@ curl -s -X POST http://localhost:8000/v1/runs \
        "/output/output_720p.ts"]}'
 ```
 
-### `GET /v1/runs?limit=0&offset=0`
+### `GET /v1/runs?limit=0&offset=0&q=`
 
 Executed commands, newest first. `limit > 0` serves one page; `total` is the
 overall count; `system` is the machine's current CPU/GPU load readout.
+`q` is an optional case-insensitive substring filter applied to each run's
+`command` string (before paging) — search by input or output file name, or
+any other keyword in the command; blank / whitespace-only is a no-op.
 
 ### `GET /v1/runs/{run_id}`
 
-One run record: argv, status, exit, timestamps, log path, stream path (if it
-writes a playlist), output file.
+One run record: argv, status, exit, timestamps (`started`, and `finished` —
+stamped when the run leaves `running`), log path, stream path (if it writes
+a playlist), output file, and the recorded `verbose` / `preflight` flags.
 
 ### `GET /v1/runs/{run_id}/log`  *(text/plain)*
 
