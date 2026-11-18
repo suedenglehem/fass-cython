@@ -494,6 +494,19 @@ docker pull "$RAG_IMAGE"
 
 COMPOSE=(docker compose -f "$DIR/compose.yaml")
 [[ -f "$DIR/compose.local.yaml" ]] && COMPOSE+=(-f "$DIR/compose.local.yaml")
+
+# Database first: bring up fass-db on its own and create it OFFLINE via
+# scripts/create-db.sh BEFORE the app comes up (pulls
+# pgvector/pgvector:pg16 if needed, starts the container if missing,
+# creates role + db, applies the full fass schema + major-version
+# stamp — all idempotent, a no-op on an existing install). Soft-fail:
+# if this fails, fass initialises the database itself on first connect
+# (pre-existing behavior), so the install converges either way.
+"${COMPOSE[@]}" up -d fass-db
+if ! bash "$DIR/../scripts/create-db.sh"; then
+  echo "WARNING: offline database creation failed — fass will initialise the database itself on first connect (pre-existing behavior). Check: docker logs fass-db" >&2
+fi
+
 "${COMPOSE[@]}" up -d
 for i in $(seq 1 90); do
   if curl -sf -m 3 "http://127.0.0.1:8000/healthz" >/dev/null 2>&1; then

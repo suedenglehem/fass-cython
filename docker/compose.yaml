@@ -5,8 +5,9 @@
 #   ../setup.sh                    # one-time: folders, LLM, GPU, ports
 #   ../scripts/web.sh start        # up the stack  →  http://<host>:8000
 #
-# The stack is four containers:
+# The stack is five containers:
 #   fass         fass itself — web UI + JSON API on :8000, GPU
+#   fass-db      the PostgreSQL store (pgvector/pgvector:pg16), internal :5432
 #   fass-worker  the Apply sidecar (same image, `worker --port 8001`)
 #   fass-rag     lexical RAG retriever (boris271142/fass-rag), internal :8100
 #   fass-http    Apache sidecar serving the http-destined HLS/DASH runs
@@ -102,6 +103,32 @@ services:
     # compose command when present. A GPU host that skips setup.sh runs
     # CPU-only until the overlay exists (FASS_GPU_PROBE then simply finds
     # no devices).
+    restart: unless-stopped
+
+  fass-db:
+    # The PostgreSQL store: ALL settings values + the whole Runs-tab
+    # history (jobs, ids, timestamps, durations, the command used, the
+    # logs) + the worker registry. fass mirrors into it with dual-write
+    # + file fallback, so this container being down only costs a UI
+    # health warning — never a blocked request. pgvector:pg16 =
+    # Postgres 16 (+ pgvector for the future). NOT port-published —
+    # only fass talks to it, via compose DNS (config.db host
+    # "fass-db"); the Config tab's db section owns the connection
+    # values. setup.sh runs ../scripts/create-db.sh against it before
+    # the app comes up (image pull + role + db + full schema + stamp).
+    image: pgvector/pgvector:pg16
+    container_name: fass-db
+    environment:
+      - POSTGRES_USER=ffmpeg
+      - POSTGRES_PASSWORD=ffmpeg
+      - POSTGRES_DB=ffmpeg_assisstant
+    volumes:
+      - ${FASS_DB_DIR:-../docker-data/db}:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ffmpeg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   fass-worker:

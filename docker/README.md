@@ -37,34 +37,38 @@ environment-based, see [Execution](#execution).
 
 ## Install (host folders are the only install-time question)
 
-From the repo root:
+The compose file is generic: the host folders come from **`docker/.env`**
+(compose interpolates `${FASS_INPUT_DIR}` etc.; defaults are
+repo-relative), and everything else — the LLM endpoint, the ports, the
+GPU — is a `config.json` value the **Config tab** owns after first boot.
 
-```sh
-./docker/install.sh            # asks for the input/output/log/config folders,
-                               # the LLM endpoint (+ API key, timeout), and
-                               # the http stream port
-./docker/install.sh --yes      # defaults: <repo>/media/{input,output,log},
-                               # <repo>/docker-data/config
-```
+The published dist (fass-cython) ships **`setup.sh`** at the repo root:
+it asks for the input/output/log/config folders, the LLM endpoint
+(+ API key, timeout), the GPU pin, and the http stream port; creates the
+folders; records them in `docker/.env` and the **`config.json` volumes
+section**; writes `FASS_HTTP_PORT` (the fass-http sidecar's host port,
+default `8080` — see [HTTP streams](#http-streams-m136)) and creates
+`<output>/http`; creates the **database offline via
+`scripts/create-db.sh`** (see [Database](#database-default-service));
+then starts the stack. Flags cover every question: `--yes --llm
+--api-key --timeout --http-port --gpu-pin`.
 
-The script creates the folders, records them in **`docker/.env`** (compose
-interpolates `${FASS_INPUT_DIR}` etc.; defaults are repo-relative) and in
-the **`config.json` volumes section** (the Config tab's store), then builds
-and starts the stack. It also writes `FASS_HTTP_PORT` (the fass-http
-sidecar's host port, default `8080` — see
-[HTTP streams](#http-streams-m136)) and creates `<output>/http`.
-The LLM model is NOT asked — set it in the Config tab.
-
-After install the **Config tab owns the paths**: Apply re-creates the
-container from `config.json`, and `launcher.sh` re-syncs `docker/.env` from
-`config.json` before every compose up — so paths changed in the UI survive
-rebuilds. `docker/.env` is machine-local (git-ignored); the compose file
-stays generic. Manual route (what install.sh does, by hand):
+In a development checkout (no `setup.sh`) the same install by hand:
 
 ```sh
 mkdir -p media/{input,output,log} docker-data/config
-docker compose -f docker/compose.yaml up -d --build   # paths from docker/.env
+docker compose -f docker/compose.yaml up -d   # paths from docker/.env;
+                                              # first run builds fass:latest
 ```
+
+The LLM model is NOT asked — set it in the Config tab.
+
+After install the **Config tab owns the paths**: Apply re-creates the
+container from `config.json`, and the launcher re-syncs `docker/.env`
+from `config.json` before every compose up (`docker/launcher.sh` in a
+development checkout, `scripts/web.sh` in the published dist) — so paths
+changed in the UI survive rebuilds. `docker/.env` is machine-local
+(git-ignored); the compose file stays generic.
 
 ### Launcher (start / stop + GUI)
 
@@ -112,7 +116,8 @@ in the file replaces; a section absent keeps the target's existing value.
 
 Host-side install choices are not part of the config file: the GPU device
 reservation in compose, the `FASS_GPU` probe flag, and the install-time host
-folders — those come from `install.sh` / compose on the target host. Two
+folders — install-time host choices: the dist's `setup.sh` prompts,
+else the compose defaults. Two
 carried-over values to check in the Config tab after start if the hosts
 differ: `streaming.http_base_url` (the fass-http address) and the
 `volumes.*_remote` store addresses/credentials. If the stack is already up,
@@ -152,8 +157,9 @@ automatically (the UI paths stay simple).
   `ports:` list (see the commented examples in `docker/compose.yaml`); the
   compose preview under the tab shows the exact lines to paste.
 - **http base URL** — the base of the fass-http sidecar's stream URLs
-  (`http://<host>:<port>`, seeded by install.sh from the host address and
-  `FASS_HTTP_PORT`). `GET /v1/streams` builds each playlist's URL as
+  (`http://<host>:<port>`, seeded by the dist's `setup.sh` from the host
+  address and `FASS_HTTP_PORT`). `GET /v1/streams` builds each playlist's
+  URL as
   `<base>/http/<path>`. Changing the URL is config-only (reloaded per
   request); changing the port itself means editing `docker/.env` + a
   compose up.
@@ -199,8 +205,8 @@ always available as fallback and needs nothing):
 - **timeout** — the LLM connection timeout in seconds (default `10`,
   range `1..300`): a hung provider fails the generation with
   `LLM provider unreachable: timed out` instead of blocking it.
-  `docker/install.sh` asks for it (`--timeout`); the Config tab has the
-  field.
+  `setup.sh` (the published dist) asks for it (`--timeout`); the Config
+  tab has the field.
 
   **strata on the host (the test setup):** provider `openai`, host
   `172.17.0.1`, port `8080`, api key *empty*, model `qwen3.8-27b`. Thinking models are handled: if the model exhausts
@@ -364,6 +370,38 @@ durations, the command used, the logs) and the worker registry.
   opt-ins; merge the `fass-db` service block into it **by hand** —
   never overwrite the file from the repo.
 
+### Offline database creation (`scripts/create-db.sh`)
+
+`scripts/create-db.sh` creates the database **without the fass app**:
+pulls `pgvector/pgvector:pg16` when the `fass-db` container is not
+running and must be started, starts it if missing (the same data dir
+`${FASS_DB_DIR:-../docker-data/db}` the compose file mounts, so a
+script-started container is exactly the one `compose up` would run),
+creates the role + database, and applies the **full fass schema (v2)**
+with the major-version stamp.
+
+```sh
+scripts/create-db.sh                  # container (if needed) + role + db + schema + stamp
+scripts/create-db.sh --status         # read-only state report
+scripts/create-db.sh --bare           # role + database only, no tables
+scripts/create-db.sh --major 1.618033 # explicit stamp (else FASS_MAJOR_VERSION,
+                                      # else the repo's fass/version.py — dev
+                                      # checkouts; the published dist has no
+                                      # version file, so the db stays un-stamped
+                                      # and fass stamps it on first connect)
+```
+
+It mirrors the Config-tab **connect** gate, so it is safe at any time:
+every statement is `CREATE ... IF NOT EXISTS` / `INSERT ... ON CONFLICT
+DO NOTHING` in a single transaction — a complete database is a no-op; a
+database stamped with a **different** major version is refused ("do
+manual migration", nothing touched); an un-stamped one is stamped the
+same way fass would on first connect. The published dist's `setup.sh`
+runs it against `fass-db` before the stack comes up. `FASS_DB_CONTAINER`
+/ `FASS_DB_NAME` / `FASS_DB_USER` / `FASS_DB_PASSWORD` point it at a
+different target; `FASS_DB_DIR` only matters when the script itself
+starts the container (a running one is used as-is).
+
 ## Tee multi-output (M13.5)
 
 `hls and dash at the same time` (also `both hls and dash`, `tee to hls
@@ -418,14 +456,7 @@ host-mode; the sidecars (`fass-worker`, `fass-rag`) stay on the bridge
 publishing their ports to `127.0.0.1`, which fass reaches through the
 host netns.
 
-**Enabling it (install time):**
-
-- interactive: `./docker/install.sh` asks *do you want to support host
-  multicast (host network mode)?* — yes writes the overlay below
-- CLI: `./docker/install.sh --yes --network host` (`--network bridge`
-  forces the default)
-
-The answer is recorded in `docker/.env` (`FASS_NETWORK=host|bridge`). In
+**Enabling it:** no installer flag — it is a machine-local overlay. In
 host mode the machine-local overlay `docker/compose.local.yaml` (merged
 with the GPU-reservation part when both apply) gains:
 
@@ -487,9 +518,9 @@ up -d` brings it up together with fass (no profile, no overlay).
   maps 1:1 onto the file, nothing is rewritten.
 - The sidecar's host port comes from `docker/.env`
   (`FASS_HTTP_PORT`, default `8080` — fass owns `8000`, fass-rag stays
-  internal on `8100` and is not published). `docker/install.sh` asks
-  for it, writes it to `.env`, and creates the `<output>/http/`
-  folder.
+  internal on `8100` and is not published). `setup.sh` (the published
+  dist) asks for it, writes it to `.env`, and creates the
+  `<output>/http/` folder.
 - A run destined for http serving writes its playlist into a **per-run
   subdir** `{output}/http/<run-id>/`, and ffmpeg runs with that dir as
   its working directory so the segments land beside the playlist. The

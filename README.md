@@ -43,7 +43,7 @@ Every request returns one of four structured outcomes — `ready`,
 `needs_clarification`, `unsupported`, `error`. Ambiguity is a first-class
 answer, never a silent partial plan.
 
-## No LLM required — the rules adapter
+## Rules adapter (to work w/o LLM)
 
 fass works fully **without any LLM** — no API key, no endpoint, no
 network beyond the deployment itself. The adapter resolves as:
@@ -1262,12 +1262,13 @@ pick it up by bare name (chained processings). The Config tab's
 
 **Multicast input/output** — multicast does not cross the compose
 bridge's NATted ports, so for it fass runs in the **host network
-namespace**: `./docker/install.sh --network host`, or answer *yes* to
-the interactive "do you want to support host multicast (host network
-mode)?" question. Only `fass` goes host-mode (the sidecars stay on the
-bridge, reachable on `127.0.0.1`), so a multicast group source works
-verbatim — a minute of `239.1.1.1:1234` on host NIC `192.168.0.30`, in
-the Runs tab's Enter mode:
+namespace** — the machine-local `docker/compose.local.yaml` overlay
+documented in
+[docker/README.md](docker/README.md#multicast-host-network-mode).
+Only `fass` goes host-mode (the sidecars stay on the bridge, reachable
+on `127.0.0.1`), so a multicast group source works verbatim — a minute
+of `239.1.1.1:1234` on host NIC `192.168.0.30`, in the Runs tab's Enter
+mode:
 
 ```sh
 ffmpeg -i "udp://239.1.1.1:1234?localaddr=192.168.0.30&fifo_size=1000000&overrun_nonfatal=1" \
