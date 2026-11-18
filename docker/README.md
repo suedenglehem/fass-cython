@@ -9,7 +9,7 @@ lexical RAG retriever, see [RAG](#rag-default-service-m13)), and
 `fass-http` (the Apache sidecar serving the http-destined HLS/DASH
 runs). The web UI gets a **Config tab** that defines the whole
 deployment: host-folder mappings for `/input`, `/output`, `/log`,
-stream port mappings, GPU, and the LLM provider. The container can
+`/scores`, stream port mappings, GPU, and the LLM provider. The container can
 **execute** the generated FFmpeg commands (gated and validated — see
 [Execution](#execution)).
 
@@ -17,6 +17,7 @@ stream port mappings, GPU, and the LLM provider. The container can
 host folder ──(volume)──▶ /input    source media
 host folder ──(volume)──▶ /output   run results (playable from the UI)
 host folder ──(volume)──▶ /log      run logs + run records
+host folder ──(volume)──▶ /scores   VMAF score files (UUID.json + master.txt)
 host folder ──(volume)──▶ /config   config.json (the Config tab reads/writes it)
 ```
 
@@ -56,7 +57,7 @@ then starts the stack. Flags cover every question: `--yes --llm
 In a development checkout (no `setup.sh`) the same install by hand:
 
 ```sh
-mkdir -p media/{input,output,log} docker-data/config
+mkdir -p media/{input,output,log,scores} docker-data/config
 docker compose -f docker/compose.yaml up -d   # paths from docker/.env;
                                               # first run builds fass:latest
 ```
@@ -135,7 +136,8 @@ stripped) above the fass version string.
 
 ### Volumes
 
-Host folders for `/input`, `/output`, `/log`. This is documentation + the
+Host folders for `/input`, `/output`, `/log`, `/scores`. This is
+documentation + the
 input to the **compose preview** shown under the tab — fass cannot remount
 volumes in a running container, so changing them here means: update the
 compose file, then **Apply** (or `docker compose up -d` again).

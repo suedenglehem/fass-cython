@@ -56,6 +56,7 @@ services:
       - ${FASS_INPUT_DIR:-../media/input}:/input
       - ${FASS_OUTPUT_DIR:-../media/output}:/output
       - ${FASS_LOG_DIR:-../media/log}:/log
+      - ${FASS_SCORES_DIR:-../media/scores}:/scores
       - ${FASS_CONFIG_DIR:-../docker-data/config}:/config
       # Config-tab Apply button (container self-management):
       - /var/run/docker.sock:/var/run/docker.sock
