@@ -1,17 +1,17 @@
 # fass — Docker deployment
 
-The published image **`boris271142/fass`** (Docker Hub): fass compiled
-with Cython, packaged together with FFmpeg 9.0 + NVIDIA hardware
-acceleration (base `boris271142/ffmpeg-sm_75_120:latest`), plus the
-**`boris271142/fass-rag`** retrieval image. The stack is four
-containers — `fass` (web UI + API, GPU), `fass-worker` (the Apply
-sidecar, same image), `fass-rag` (the lexical RAG retriever, see
-[RAG](#rag)), and `fass-http` (the Apache sidecar serving the
-http-destined HLS/DASH runs). The web UI gets a **Config tab** that
-defines the whole deployment: host-folder mappings for `/input`,
-`/output`, `/log`, stream port mappings, GPU, and the LLM provider. The
-container can **execute** the generated FFmpeg commands (gated and
-validated — see [Execution](#execution)).
+The published image **`boris271142/fass`** (Docker Hub): fass packaged
+together with FFmpeg 9.0 + NVIDIA hardware acceleration (base
+`boris271142/ffmpeg-sm_75_120:latest`), plus the **`boris271142/fass-rag`**
+retrieval image. The stack is four containers — `fass` (web UI + API,
+GPU), `fass-worker` (the Apply sidecar, same image), `fass-rag` (the
+lexical RAG retriever, see [RAG](#rag-default-service-m13)), and
+`fass-http` (the Apache sidecar serving the http-destined HLS/DASH
+runs). The web UI gets a **Config tab** that defines the whole
+deployment: host-folder mappings for `/input`, `/output`, `/log`,
+stream port mappings, GPU, and the LLM provider. The container can
+**execute** the generated FFmpeg commands (gated and validated — see
+[Execution](#execution)).
 
 ```
 host folder ──(volume)──▶ /input    source media
@@ -24,70 +24,100 @@ host folder ──(volume)──▶ /config   config.json (the Config tab reads/
 
 - Docker (with the `nvidia` runtime: NVIDIA driver + `nvidia-container-toolkit`)
 - an NVIDIA GPU (for GPU encoding)
-- the FFmpeg 9.0.2 in the published image is rebuilt with CUDA
-  sm_75…sm_120, libvmaf with CUDA, and RIST (the main README's
-  [Docker deployment](../README.md#docker-deployment) section covers
-  the supported card generations)
+- the base image `boris271142/ffmpeg-sm_75_120:latest` (FFmpeg 9.0.2
+  rebuilt with CUDA sm_75…sm_120, libvmaf with CUDA, and RIST — pulled
+  automatically on first build; the main README's
+  [Docker deployment](../README.md#docker-deployment) section covers the
+  supported card generations)
 
 The image is a **deployment** build: `FASS_ALLOW_EXECUTE=1` is baked in, so
-only run it where you want fass to execute FFmpeg. (The compiled CLI wheel
-in `../wheel/`, run on its own, never executes anything — the gate is
-environment-based, see [Execution](#execution).)
+only run it where you want fass to execute FFmpeg. A development checkout
+(`python -m fass serve` from the repo) never executes anything — the gate is
+environment-based, see [Execution](#execution).
 
 ## Install (host folders are the only install-time question)
 
 From the repo root:
 
 ```sh
-./setup.sh            # asks for the input/output/log/config folders,
-                      # the LLM endpoint (+ API key, timeout), the http
-                      # stream port, and the GPU pin
-./setup.sh --yes      # defaults: <repo>/media/{input,output,log},
-                      # <repo>/docker-data/config
+./docker/install.sh            # asks for the input/output/log/config folders,
+                               # the LLM endpoint (+ API key, timeout), and
+                               # the http stream port
+./docker/install.sh --yes      # defaults: <repo>/media/{input,output,log},
+                               # <repo>/docker-data/config
 ```
 
 The script creates the folders, records them in **`docker/.env`** (compose
 interpolates `${FASS_INPUT_DIR}` etc.; defaults are repo-relative) and in
-the **`config.json` volumes section** (the Config tab's store), pulls
-`boris271142/fass`, and starts the stack. It also writes `FASS_HTTP_PORT`
-(the fass-http sidecar's host port, default `8080` — see
-[HTTP streams](#http-streams)) and creates `<output>/http`.
+the **`config.json` volumes section** (the Config tab's store), then builds
+and starts the stack. It also writes `FASS_HTTP_PORT` (the fass-http
+sidecar's host port, default `8080` — see
+[HTTP streams](#http-streams-m136)) and creates `<output>/http`.
 The LLM model is NOT asked — set it in the Config tab.
 
 After install the **Config tab owns the paths**: Apply re-creates the
-container from `config.json`, and `scripts/web.sh` re-syncs `docker/.env`
-from `config.json` before every compose up — so paths changed in the UI
-survive restarts. `docker/.env` is machine-local (git-ignored); the compose
-file stays generic. Manual route (what setup.sh does, by hand):
+container from `config.json`, and `launcher.sh` re-syncs `docker/.env` from
+`config.json` before every compose up — so paths changed in the UI survive
+rebuilds. `docker/.env` is machine-local (git-ignored); the compose file
+stays generic. Manual route (what install.sh does, by hand):
 
 ```sh
 mkdir -p media/{input,output,log} docker-data/config
-docker pull boris271142/fass
-docker compose -f docker/compose.yaml up -d   # paths from docker/.env
+docker compose -f docker/compose.yaml up -d --build   # paths from docker/.env
 ```
 
-### Stack control
+### Launcher (start / stop + GUI)
 
-`scripts/web.sh` wraps the compose lifecycle and opens the web GUI:
+`docker/launcher.sh` wraps the compose lifecycle and opens the web GUI:
 
-- `./scripts/web.sh start` — no-op if the stack is already healthy, else
+- `./launcher.sh start` — no-op if the stack is already healthy, else
   `up -d` + wait for healthz, then fires Chrome at `http://127.0.0.1:8000`
   (override with `FASS_GUI_URL` / `FASS_BROWSER`); over ssh (no graphical
   session — neither `DISPLAY` nor `WAYLAND_DISPLAY` set) it prints the URL
   instead.
-- `./scripts/web.sh pull` — `docker pull` the latest published image and
-  restart the stack on it. This is the upgrade path.
-- `./scripts/web.sh restart` — recreate the containers from the current
-  `.env` / config.
-- `./scripts/web.sh stop` — `compose stop`; volumes and state are kept.
-- `./scripts/web.sh status` — containers + healthz.
-- `./scripts/web.sh logs [N]` — the last N lines of fass (default 100).
+- `./launcher.sh rebuild` — `up -d --build` (fresh image) + GUI.
+- `./launcher.sh stop` — `compose stop`; volumes and state are kept.
+- `./launcher.sh status` — containers + healthz.
 
 The entrypoint seeds `/config/config.json` on first start with deployment
-sensible defaults (an OpenAI-compatible LLM at the docker bridge gateway
-`172.17.0.1:8080` — the host, seen from the container; GPU enabled;
-streaming enabled; empty volume mappings). Tune everything from the Config
-tab afterwards.
+sensible defaults (OpenAI-compatible LLM at the docker bridge gateway
+`172.17.0.1:8080`, model `qwen3.8-27b` — the strata server on the host; GPU
+enabled; streaming enabled; empty volume mappings). Tune everything from the
+Config tab afterwards.
+
+> `docker/compose.yaml` hard-codes `docker-data/` under the repo path on this
+> machine — edit the four volume paths to your host layout before deploying
+> elsewhere. The Config tab's volume fields show the *intended* host folders
+> and drive the generated compose preview; the actual mounts are whatever the
+> compose file (or `docker run`) says.
+
+### Start from an exported config (another host)
+
+The Config tab's **Export conf.json** button (the same document the "Submit a
+bug" report gathers) is the export side. To bring that configuration to
+another machine, put the file there and run:
+
+```
+./docker/start-from-conf.sh /path/to/conf.json            # install config + up -d
+./docker/start-from-conf.sh /path/to/conf.json --rebuild  # + up -d --build
+./docker/start-from-conf.sh /path/to/conf.json --dry-run  # print the result, touch nothing
+```
+
+It accepts both document shapes — the `{config, environment}` export and the
+raw `GET /v1/config` document. What is applied: the Config-tab sections
+(volumes, streaming, GPU, RAG) — **excluding the LLM provider section**, which
+is ignored on purpose: this host keeps its own LLM settings (a fresh host
+gets the defaults until the LLM is set in the Config tab). A section present
+in the file replaces; a section absent keeps the target's existing value.
+
+Host-side install choices are not part of the config file: the GPU device
+reservation in compose, the `FASS_GPU` probe flag, and the install-time host
+folders — those come from `install.sh` / compose on the target host. Two
+carried-over values to check in the Config tab after start if the hosts
+differ: `streaming.http_base_url` (the fass-http address) and the
+`volumes.*_remote` store addresses/credentials. If the stack is already up,
+volume/GPU changes only take effect on a container recreation — use
+`--rebuild` (or stop first).
 
 ## The Config tab
 
@@ -122,7 +152,7 @@ automatically (the UI paths stay simple).
   `ports:` list (see the commented examples in `docker/compose.yaml`); the
   compose preview under the tab shows the exact lines to paste.
 - **http base URL** — the base of the fass-http sidecar's stream URLs
-  (`http://<host>:<port>`, seeded by setup.sh from the host address and
+  (`http://<host>:<port>`, seeded by install.sh from the host address and
   `FASS_HTTP_PORT`). `GET /v1/streams` builds each playlist's URL as
   `<base>/http/<path>`. Changing the URL is config-only (reloaded per
   request); changing the port itself means editing `docker/.env` + a
@@ -161,19 +191,21 @@ always available as fallback and needs nothing):
 
 - **provider** `anthropic` — `api.anthropic.com`, needs an API key.
 - **provider** `openai` — any OpenAI-compatible `/v1/chat/completions`
-  endpoint (a local server — vLLM, llama.cpp, … — or a real end-user API):
-  **scheme, host, port, api key, model id**. `scheme https` speaks TLS to
-  real end-user APIs (OpenAI, DeepSeek, Groq, … — a blank port means 443);
-  local servers stay `http`. From inside the container, a host-side server
-  is reached through the bridge gateway: host `172.17.0.1`.
+  endpoint (strata, vLLM, llama.cpp, …): **scheme, host, port, api key,
+  model id**. `scheme https` speaks TLS to real end-user APIs (OpenAI,
+  DeepSeek, Groq, … — a blank port means 443); local servers (strata,
+  vLLM) stay `http`. From inside the container, a host-side server is
+  reached through the bridge gateway: host `172.17.0.1`.
 - **timeout** — the LLM connection timeout in seconds (default `10`,
   range `1..300`): a hung provider fails the generation with
   `LLM provider unreachable: timed out` instead of blocking it.
-  `../setup.sh` asks for it (`--timeout`); the Config tab has the field.
+  `docker/install.sh` asks for it (`--timeout`); the Config tab has the
+  field.
 
-  Thinking models are handled: if the model exhausts `max_tokens` in its
-  reasoning trace (empty answer), fass retries once with 8× the token
-  budget.
+  **strata on the host (the test setup):** provider `openai`, host
+  `172.17.0.1`, port `8080`, api key *empty*, model `qwen3.8-27b`. Thinking models are handled: if the model exhausts
+  `max_tokens` in its reasoning trace (empty answer), fass retries once with
+  8× the token budget.
 
 **Test LLM** button: sends a one-word probe through the real request path
 (`POST /v1/config/llm-test`) and shows the reply + latency, using the values
@@ -226,8 +258,8 @@ The Runs tab starts generated commands inside the container and shows status,
 exit code, log tail, and the resulting file (playable/downloadable from
 `/output`). The security model:
 
-- **off unless `FASS_ALLOW_EXECUTE` is set** — the published image sets it;
-  the compiled CLI, run on its own, never runs anything.
+- **off unless `FASS_ALLOW_EXECUTE` is set** — the image sets it; a dev
+  checkout never runs anything.
 - **argv array only**, `shell=False` — a rendered shell string is never
   parsed; shell metacharacters are inert.
 - **argv validated against the builder's flag vocabulary** before any process
@@ -269,21 +301,70 @@ in the image):
 The socket grant means each of these containers can manage *any* container
 on the host — only run the stack where you accept that.
 
-## RAG
+## RAG (default service, M13)
 
-The fass UI has a **RAG tab** — a direct query box for the retrieval
-service that backs the **RAG evidence** on ready results. The
-**`fass-rag`** sidecar (image `boris271142/fass-rag`) is part of the
-default stack: a CPU-only, non-root container with no device
-passthrough and no host socket. Its corpus index is baked into the
-image at build time — no volume, no first-boot build — and the port
-(8100) is not published: only `fass` talks to it, via compose DNS
-(`FASS_RAG_ENABLED=1`, `FASS_RAG_URL=http://fass-rag:8100`).
-Generation is unaffected even if the service is down — the fass-side
-RAG client is fail-open: a missing service degrades generation to
-evidence-less, it never blocks it.
+`fass-rag` — the lexical retriever over the pinned FFmpeg corpora — is part
+of the **default** deployment: `docker compose -f docker/compose.yaml up -d`
+brings it up (no profile, no overlay; the old opt-in `docker/compose.rag.yaml`
+is retired) and the fass service is wired to it via `FASS_RAG_ENABLED=1` +
+`FASS_RAG_URL=http://fass-rag:8100` in the compose environment.
 
-## Tee multi-output
+- **The corpus index is baked into the image.** `docker/Dockerfile.rag`
+  copies the pinned corpus source (`rag/corpus/ffmpeg-9.0.2` +
+  `ffmpeg-6.1.1`) into `/data` and runs `python -m rag.ingest` as a
+  build-time step, so the finished `/data/<corpus_id>/` tree (manifest +
+  chunks) lives in an image layer. The service starts serving with **no
+  volume mount** and no first-boot build.
+- **Build prerequisite:** the corpus source (`docs/*.html`,
+  `build-facts/*.txt`) is generated data, gitignored by design — run
+  `rag/tools/build_corpus.sh` (recipe: `rag/corpus/BUILD-RECIPE.md`) in the
+  build context first. A corpus-less context fails the image build loudly.
+- **Fail-open (PRD 4.4):** the fass-side client never blocks generation.
+  With fass-rag down, `/v1/commands` still succeeds and the evidence block
+  records status `unavailable`; `GET /v1/rag` shows the degraded state.
+- **Non-dev default:** the code default in `fass/config.py` stays OFF —
+  development checkouts don't need the service; docker enables it via env.
+- **i7 live rule (PRD 6.7):** i7's live compose carries local opt-ins
+  (socket mount, `FASS_DOCKER_MANAGE=1`, GPU pin). Merge the `fass-rag`
+  service block and the two `FASS_RAG_*` env lines into it **by hand** —
+  never overwrite the file from the repo.
+
+## Database (default service)
+
+`fass-db` — PostgreSQL 16 (`pgvector/pgvector:pg16`, pgvector kept for
+the future) — is part of the **default** deployment: it stores ALL
+settings values, the whole Runs-tab history (jobs, ids, timestamps,
+durations, the command used, the logs) and the worker registry.
+
+- **Defaults:** user `ffmpeg` / password `ffmpeg` / database
+  `ffmpeg_assisstant`, host `fass-db` (compose DNS — the port is
+  **not** published; only fass talks to it). The Config tab's
+  **DB, settings and runs** section owns every connection value
+  (host / port / user / password / database) — **connect** there
+  reconnects after a configuration change and checks the database's
+  stored major fass version against this build: an empty database is
+  initialised (schema created, seeded from the files, this worker
+  registered), a compatible one connects as-is (never re-seeded), and
+  a different version is refused with "old db version, do manual
+  migration" — a populated database is never migrated automatically.
+- **Dual-write, file fallback (fail-open):** the files stay the
+  primary store; the database is a mirror. A dead `fass-db` costs a
+  UI health warning (the same popup as a lost LLM) — never a blocked
+  request or lost data.
+- **Schema versioning:** the bootstrap creates a `schema_version`
+  table so future migrations can apply incrementally.
+- **Worker identity:** each fass docker instance registers a stable
+  random UUID (`worker-id.json` beside the config file, surviving
+  container recreates); every job records the worker that submitted
+  it and the fass version that submitted it. Default role:
+  `master+worker`.
+- **Data volume:** `${FASS_DB_DIR:-../docker-data/db}` — keep it when
+  migrating hosts; it is the only state `fass-db` holds.
+- **i7 live rule (PRD 6.7):** i7's live compose carries local
+  opt-ins; merge the `fass-db` service block into it **by hand** —
+  never overwrite the file from the repo.
+
+## Tee multi-output (M13.5)
 
 `hls and dash at the same time` (also `both hls and dash`, `tee to hls
 and dash`, either order) selects the **tee** muxer: ONE encode writing
@@ -301,7 +382,7 @@ route into the hls branch, the `dash_*` options into the dash branch;
 the tee muxer accepts what its branches accept (registry group union
 `tee = hls + dash + tee`). A tee run is not http-served — the
 destination is a template, not one playlist (see
-[HTTP streams](#http-streams)).
+[HTTP streams](#http-streams-m136)).
 
 ## Quality metrics (VMAF / PSNR / SSIM)
 
@@ -320,10 +401,10 @@ ffmpeg -i titan.mp4 -i /output/titan.webm -filter_complex '…libvmaf…[cmp]' -
 ```
 
 Explicit bindings override the auto-detection: bind a second video
-asset (main = distorted, the asset = reference), or name the distorted
-clip as the `distorted` asset (the web UI's Output field does this).
-When the output folder holds no video, the clarification asks for the
-distorted file.
+asset (the M10.4 flow — main = distorted, the asset = reference), or
+name the distorted clip as the `distorted` asset (the web UI's Output
+field does this). When the output folder holds no video, the
+clarification asks for the distorted file.
 
 ## Multicast (host network mode)
 
@@ -337,21 +418,24 @@ host-mode; the sidecars (`fass-worker`, `fass-rag`) stay on the bridge
 publishing their ports to `127.0.0.1`, which fass reaches through the
 host netns.
 
-**Enabling it:** `setup.sh` does not set it up (the default install is
-bridge mode) — edit `docker/compose.yaml` by hand:
+**Enabling it (install time):**
 
-- `fass` gains `network_mode: host` (its `ports:` entries are then
-  ignored by docker with a warning — fass binds 8000 on the host
-  directly), and its environment switches from compose service DNS to
-  the loopback: `FASS_DOCKER_WORKER=127.0.0.1:8001` and
-  `FASS_RAG_URL=http://127.0.0.1:8100`
-- `fass-worker` and `fass-rag` gain published ports
-  `127.0.0.1:8001:8001` / `127.0.0.1:8100:8100` (they are not
-  port-published in the default file)
-- `fass-http` (the http stream sidecar) is untouched — bridge + its
-  port
+- interactive: `./docker/install.sh` asks *do you want to support host
+  multicast (host network mode)?* — yes writes the overlay below
+- CLI: `./docker/install.sh --yes --network host` (`--network bridge`
+  forces the default)
 
-Then `scripts/web.sh restart` to apply.
+The answer is recorded in `docker/.env` (`FASS_NETWORK=host|bridge`). In
+host mode the machine-local overlay `docker/compose.local.yaml` (merged
+with the GPU-reservation part when both apply) gains:
+
+- `fass: network_mode: host` — fass binds 8000 on the host directly (the
+  base `8000:8000` ports entry is discarded by docker with a warning)
+- `FASS_DOCKER_WORKER=127.0.0.1:8001` + `FASS_RAG_URL=http://127.0.0.1:8100`
+  on fass (compose merges environment maps key-by-key over the base list
+  entries)
+- `127.0.0.1:8001:8001` / `127.0.0.1:8100:8100` on the sidecars
+- fass-http (the http stream sidecar) is untouched — bridge + its port
 
 **Verifying** — at startup fass runs `ip link show <name>` on every
 interface inside the container and looks for `MULTICAST` in the flag
@@ -390,20 +474,21 @@ absorbs arrival bursts so a joiner that lands mid-stream recovers
 instead of failing. Multicast **output** is symmetric — a command
 destination can be `udp://<group>:<port>?localaddr=<host IP>`.
 
-## HTTP streams
+## HTTP streams (M13.6)
 
 HLS/DASH runs destined for browser playback are served by the
 **fass-http** sidecar — a plain `httpd:2.4-alpine` static server that is
 part of the default deployment: `docker compose -f docker/compose.yaml
-up -d` brings it up together with fass.
+up -d` brings it up together with fass (no profile, no overlay).
 
 - The **whole output volume** is mounted read-only at the sidecar's
   htdocs root, so a file at `{output}/http/<run-id>/stream.m3u8` is
   served at `http://<host>:<port>/http/<run-id>/stream.m3u8` — the URL
   maps 1:1 onto the file, nothing is rewritten.
 - The sidecar's host port comes from `docker/.env`
-  (`FASS_HTTP_PORT`, default `8080` — fass owns `8000`). `../setup.sh`
-  asks for it, writes it to `.env`, and creates the `<output>/http/`
+  (`FASS_HTTP_PORT`, default `8080` — fass owns `8000`, fass-rag stays
+  internal on `8100` and is not published). `docker/install.sh` asks
+  for it, writes it to `.env`, and creates the `<output>/http/`
   folder.
 - A run destined for http serving writes its playlist into a **per-run
   subdir** `{output}/http/<run-id>/`, and ffmpeg runs with that dir as
@@ -441,20 +526,21 @@ up -d` brings it up together with fass.
 **Who owns what:** the Config tab's **Apply** recreates the fass
 container only (the fass-worker swap) — it cannot create or restart
 fass-http, which is owned by the host-side `compose up`
-(`../scripts/web.sh start|restart`). A first-time sidecar, or a changed
-`FASS_HTTP_PORT`, takes effect on the next start. `scripts/web.sh`
+(`docker/launcher.sh start|rebuild`). A first-time sidecar, or a changed
+`FASS_HTTP_PORT`, takes effect on the next start/rebuild. `launcher.sh`
 re-syncs `docker/.env` from `config.json` before every up and preserves
 every non-volume line, so `FASS_HTTP_PORT` (like `FASS_GPU`) survives.
+On i7's live compose the fass-http block is merged **by hand**, like
+the fass-rag block.
 
-## CLI wheel vs docker image
+## Development vs deployment
 
-| | CLI wheel | docker image |
+| | dev checkout | docker image |
 |---|---|---|
 | execution | off (env gate) | on (`FASS_ALLOW_EXECUTE=1`) |
 | config file | `./.fass-config.json` | `/config/config.json` (seeded) |
 | volumes | cwd / local paths | `/input` `/output` `/log` mounts |
 | FFmpeg | whatever is on PATH | 9.0 + nvenc, in the image |
-| RAG | off (code default) | on (`fass-rag` sidecar, `FASS_RAG_ENABLED=1`) |
+| RAG | off (code default) | on (`FASS_RAG_ENABLED=1`, baked index) |
 
-Both run the same compiled code; the difference is environment, not code
-paths.
+Both run the same code; the difference is environment, not code paths.

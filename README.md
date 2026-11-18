@@ -21,52 +21,23 @@ instruction ──> NLU (rules | llm) ──> EditPlan (strict schema)
 **Linux only.** fass is a Linux deployment — the Docker stack uses the
 NVIDIA runtime for the GPU path — and **Windows and macOS are not
 supported**: there is no build for them, and the install script
-(`setup.sh`) refuses to run on anything but Linux. **Docker is required**
-(CLI + compose plugin + a daemon reachable from your user), and the
-machine needs **at least 2 GB of free RAM** — `setup.sh` checks both
-before asking anything and aborts with a clear error if either is
-missing.
+(`setup.sh`) refuses to run on anything but Linux.
 
 ## Quick start
 
-This repo is the **public distribution tree**: everything runs from the
-compiled CLI wheel in `wheel/` (CPython 3.12, Linux x86-64) or from the
-published Docker image `boris271142/fass` (Docker Hub) — no Python
-sources are needed.
-
-### CLI (compiled wheel)
-
-The host needs FFmpeg 9.x + ffprobe on PATH.
-
 ```bash
-python3.12 -m venv ~/.venvs/fass
-~/.venvs/fass/bin/pip install "wheel/fass-0.1.0-cp312-cp312-linux_x86_64.whl[api]"
-                                                  # add ,storage for remote
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e ".[api]"     # add ,dev for tests,
+                                                  # ,storage for remote
                                                   # volume mapping
                                                   # (FTP/SFTP/SCP/S3),
                                                   # ,mcp for
                                                   # `fass mcp`
 
-~/.venvs/fass/bin/fass "cut from 00:10 to 00:30 and resize to 720p" clip.mp4
-~/.venvs/fass/bin/fass "replace the audio with song.mp3" clip.mp4 --asset song=song.mp3
-./serve.sh                                       # web UI + JSON API on :8000
+./.venv/bin/python -m fass "cut from 00:10 to 00:30 and resize to 720p" clip.mp4
+./.venv/bin/python -m fass "replace the audio with song.mp3" clip.mp4 --asset song=song.mp3
+./.venv/bin/python -m fass serve                  # web UI + JSON API on :8000
 ```
-
-`./serve.sh` does the venv + wheel install itself if `~/.venvs/fass`
-doesn't exist yet (override with `FASS_VENV`); it is idempotent — a
-healthy server on the port is left running.
-
-### Docker
-
-`./setup.sh` — interactive one-time install (host folders, LLM endpoint,
-http stream port, GPU pin); it pulls `boris271142/fass` and starts the
-stack → http://127.0.0.1:8000. On a machine where an older fass install
-already runs, it finds the old containers and asks: remove them and
-upgrade, or quit — `./setup.sh --upgrade` answers "remove" up front
-(only the containers go; the old config/media folders and images are
-kept). A port held by a program that is not fass is never touched: the
-http sidecar port can be moved (`--http-port`), the web UI port (8000)
-is fixed. See [Docker deployment](#docker-deployment).
 
 Every request returns one of four structured outcomes — `ready`,
 `needs_clarification`, `unsupported`, `error`. Ambiguity is a first-class
@@ -102,7 +73,7 @@ ever *plans*; it never writes shell.
 
 `fass serve` (or the docker image) puts a single-page web UI at the
 service's root — seven tabs, plus a footer (ffmpeg build, fass version,
-[GitHub issues](https://github.com/suedenglehem/fass-cython/issues), and an
+[GitHub issues](https://github.com/suedenglehem/fass/issues), and an
 "if you're still clueless" video). The page is one self-contained HTML
 file with no CDN dependencies (shaka-player is bundled locally for the
 Player tab), so it works on a networked box as well as an isolated one.
@@ -395,9 +366,7 @@ corpus, corpus-match and evidence-status badges, retrieval time,
 warnings, and one card per chunk — title (linking into the pinned
 manual), component type·name, option-name badges, score, and the chunk
 text. The Config tab shows the service's status; a down service degrades
-generation (fail-open), it never breaks it. In the published Docker
-deployment the `fass-rag` sidecar is part of the stack (internal,
-not port-published).
+generation (fail-open), it never breaks it.
 
 ### Config tab — deployment settings
 
@@ -413,7 +382,8 @@ Sections, top to bottom:
   options it gates are: the **remote mappings** below, the **min free
   disk space** and **output overwrite (`-y`)** rows, the LLM provider's
   **thinking modes**, and the whole **Streaming — port mappings**,
-  **Shaka player**, **GPU (NVIDIA)** and **API key** sections. The
+  **Shaka player**, **GPU (NVIDIA)**, **API key** and **DB, settings
+  and runs** sections. The
   mapping's role per volume:
   - **input** — a file missing locally is *downloaded from the remote
     before use*;
@@ -534,25 +504,35 @@ Sections, top to bottom:
   stays open, exactly as before.
 
   ![Config tab (full-tab shot) — the API key section carries the API/MCP master ticker and the fass api key field](screenshots/Config.png)
-- **DB, settings and runs** — the **PostgreSQL** mirror of the settings
+- **DB, settings and runs** (an advanced option — visible with **show
+  more** on) — the **PostgreSQL** mirror of the settings
   and the whole Runs-tab history: **db ip / host** (default
   `fass-db` — the compose database service), **port** (5432),
   **user name** / **password** (both default `ffmpeg`), and
   **database name** (default `ffmpeg_assisstant`). **check
   connection** pings the server and reports the tables found, the
-  schema version, and the registered workers; **reset** is for after a
-  db configuration change (new host / user / password / database): it
-  reconnects without a restart, creates the schema when it is missing,
-  re-seeds an empty database from the files, and registers this worker.
-  The status line under the buttons is updated by the UI's 20 s poll.
+  schema version, the database's major fass version, and the
+  registered workers; **connect** is for after a db configuration
+  change (new host / user / password / database): it reconnects
+  without a restart and checks that the database's **major fass
+  version** (the one it was initialised with — in `v1.618033.6638fa2`
+  the `1.618033` part, the commit-sha part is the minor) matches this
+  build's: an **empty** database is initialised (the schema is
+  created and stamped, seeded from the files, this worker
+  registered), a **compatible** one connects as-is and is **never
+  re-seeded**, and a **different** version is refused with the popup
+  "**old db version, do manual migration**" — a populated database is
+  never migrated or touched automatically. The status line under the
+  buttons is updated by the UI's 20 s poll.
   Storage semantics: the files stay the **primary** store — every
   setting change and every run record (its log included) is
   **dual-written** to the database; a lost database never blocks or
   loses anything, it only raises the health warning (the popup and the
   strip under the tabs, like a lost LLM). At startup the one-shot
   bootstrap connects, creates the schema (versioned in a
-  `schema_version` table, for future migrations), seeds an empty
-  database from the existing files, and registers this fass as a
+  `schema_version` table, for future migrations), stamps the running
+  major fass version into the database, seeds an empty database from
+  the existing files, and registers this fass as a
   worker: each fass docker instance has a stable random **worker id**
   (a UUID persisted beside the config file, surviving container
   recreates), every job records the worker that submitted it and the
@@ -631,8 +611,7 @@ fass examples                               # supported-feature summary + exampl
   the probe)
 - **--preflight** — check the local FFmpeg build before planning
 - **--json** — print the full JSON response (always on with `--case`)
-- **--execute** — run the generated command locally (the CLI gate; in the
-  docker deployment execution happens from the **Runs** tab)
+- **--execute** — DEV: run the generated command locally
 - **--batch FILE|DIR …** — batch: the *same* instruction over many
   files, one at a time in sorted order. A directory contributes its
   top-level video files only (the registry's video containers — no
@@ -899,9 +878,8 @@ responses and curl examples) is in [API.md](API.md).
 `fass mcp` speaks the Model Context Protocol, so any MCP client (Claude
 Code, an agent, a test harness) can drive fass directly. stdio by
 default (the client spawns the process); `--transport streamable-http`
-exposes a network endpoint on host:port. Install the extra (in the
-venv): `pip install "wheel/fass-0.1.0-cp312-cp312-linux_x86_64.whl[mcp]"`
-(mcp v1 — 2.x renamed FastMCP).
+exposes a network endpoint on host:port. Install the extra:
+`pip install -e ".[mcp]"` (mcp v1 — 2.x renamed FastMCP).
 
 Four tools, all returning the same JSON the CLI's `--json` prints:
 
@@ -1036,7 +1014,8 @@ audio with song.mp3" and "watermark it with a and b" work.
   MP4 / MOV / MKV / WebM / MPEG-TS / MXF / AVI / FLV / GIF / WebP / OGV with
   H.264 / H.265 / AV1 (libaom, the default) / SVT-AV1 / VP9 / VP8 / Theora /
   VVC / MPEG-2 / ProRes / MJPEG, audio in MP3 / AAC / FLAC / Opus /
-  ALAC / AC-3 / E-AC-3 / PCM, HLS, and more. The default AAC encoder is
+  ALAC / AC-3 / E-AC-3 / PCM, HLS, and more (see
+  [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). The default AAC encoder is
   `libfdk_aac` (better quality per bitrate) — the built-in `aac` stays
   only on an explicit native-AAC request, and a plan encoding fdk on a
   build without `libfdk_aac` falls back to the built-in with a warning.
@@ -1103,8 +1082,8 @@ audio with song.mp3" and "watermark it with a and b" work.
 
 The full web API (every endpoint — `POST /v1/commands`, `POST /v1/runs`,
 the files / media / config endpoints), the security model, the validation
-levels, the authentication posture and the curl examples live in
-[API.md](API.md).
+levels, the test suite, and the roadmap live in
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Quality comparison (VMAF / PSNR / SSIM)
 
@@ -1222,23 +1201,9 @@ Stop it with the ordinary `POST /v1/runs/{run_id}/stop`.
 
 ## Docker deployment
 
-The published image `boris271142/fass` (Docker Hub): fass compiled with
-Cython, FFmpeg 9.0 + NVIDIA hardware acceleration, plus the
-`boris271142/fass-rag` retrieval image. Four containers — `fass`, the
-`fass-worker` Apply sidecar, the `fass-rag` lexical RAG retriever
-(corpus index baked into its image, no volume), and the `fass-http`
-Apache sidecar for HLS/DASH stream runs — up with one script:
-
-```bash
-./setup.sh                  # interactive: folders, LLM endpoint, ports, GPU
-                            # → http://<host>:8000
-./setup.sh --upgrade        # an older fass install runs here: remove its
-                            # containers (the upgrade) without asking
-./scripts/web.sh            # start / pull / restart / stop / status / logs
-```
-
-The image's FFmpeg (base `boris271142/ffmpeg-sm_75_120`, a rebuild of
-`jrottenberg/ffmpeg` 9.0.2) is compiled with **CUDA compute
+fass packaged with FFmpeg 9.0 + NVIDIA hardware acceleration, in a single
+container. The image's FFmpeg (base `boris271142/ffmpeg-sm_75_120`, a
+rebuild of `jrottenberg/ffmpeg` 9.0.2) is compiled with **CUDA compute
 compatibility 7.5** — the compute capability of NVIDIA's **Turing**
 generation: its CUDA filter stack (`scale_cuda`, `overlay_cuda`, the
 `hwupload`/`hwdownload` bridges, GPU decode) is built as **compute_75
@@ -1276,6 +1241,10 @@ runtime mounts the host driver to, so GPU-less containers (the
 the base builder's README
 ([suedenglehem/jrottenberg-ffmpeg-sm_75_120](https://github.com/suedenglehem/jrottenberg-ffmpeg-sm_75_120)).
 
+```bash
+docker compose -f docker/compose.yaml up -d --build   # → http://<host>:8000
+```
+
 The web UI gets a **Config tab**: host-folder mappings for `/input`,
 `/output`, `/log` (each optionally mapped to a remote FTP / SFTP / SCP
 / S3 store), stream port mappings (in: `udp://host:port` binds to `0.0.0.0`
@@ -1293,11 +1262,10 @@ pick it up by bare name (chained processings). The Config tab's
 
 **Multicast input/output** — multicast does not cross the compose
 bridge's NATted ports, so for it fass runs in the **host network
-namespace**: add `network_mode: host` to the `fass` service in
-`docker/compose.yaml` (plus the two sidecar port/URL tweaks it needs —
-the details at the end of this paragraph). Only `fass` goes host-mode
-(the sidecars stay on the bridge, reachable on `127.0.0.1`), so a
-multicast group source works
+namespace**: `./docker/install.sh --network host`, or answer *yes* to
+the interactive "do you want to support host multicast (host network
+mode)?" question. Only `fass` goes host-mode (the sidecars stay on the
+bridge, reachable on `127.0.0.1`), so a multicast group source works
 verbatim — a minute of `239.1.1.1:1234` on host NIC `192.168.0.30`, in
 the Runs tab's Enter mode:
 
@@ -1318,14 +1286,14 @@ one interface carries the MULTICAST flag, red **multicast disabled**
 when none, a neutral note when it cannot be determined. Linux sets the
 flag by default, so it stays green in bridge mode too — what actually
 makes the host's groups reachable is host network mode + the host
-firewall, as above. Full setup, the sender example and the compose
-tweaks:
+firewall, as above. Full setup, the sender example and the overlay
+details:
 [docker/README.md — Multicast](docker/README.md#multicast-host-network-mode).
 
 **RIST input/output** — the base image's ffmpeg speaks `rist://`
 natively (ffmpeg 9.0.2 + librist 0.2.20, built into
-`boris271142/ffmpeg-sm_75_120`). A working send/receive pair, verified
-end-to-end (8 s of
+`boris271142/ffmpeg-sm_75_120` itself — the in-repo RIST rebuild stage
+is gone). A working send/receive pair, verified end-to-end (8 s of
 1280x720 H.264, 4.7 MB received, loopback):
 
 ```sh
@@ -1368,6 +1336,7 @@ ffmpeg -re -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   Enter mode (a stream destination fixes the container to mpegts,
   like every other live scheme). Cross-host, the port is plain UDP —
   expose it in the compose file.
+
 ## Safety
 
 - argv arrays only — model output is schema-validated, the builder emits
@@ -1387,4 +1356,4 @@ ffmpeg -re -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   Config tab's "output file already exists → overwrite it" option is
   on (default off — a standard warning is issued instead)
 
-Published at github.com/suedenglehem/fass-cython (branch main).
+Spec: `ffmpeg-assistant-rag-prd.md`

@@ -767,41 +767,55 @@ up→down, silent recovery).
 
 ```json
 {"ok": true, "detail": "connected to ffmpeg_assisstant@fass-db:5432 as ffmpeg",
- "schema_version": 1}
+ "schema_version": 2}
 ```
 
 ### `POST /v1/db/check`
 
 The Config tab's **check connection** button: a fresh probe plus what is
 actually in the database — the tables present, the applied schema version,
-the registered worker count.
+the database's major fass version (the stamp it was initialised with),
+and the registered worker count.
 
 ```json
 {"ok": true,
  "detail": "connected to ffmpeg_assisstant@fass-db:5432 as ffmpeg",
  "tables": {"schema_version": true, "settings": true, "runs": true,
-            "run_logs": true, "workers": true},
- "schema_version": 1, "workers": 1}
+            "run_logs": true, "workers": true, "meta": true},
+ "schema_version": 2, "db_major_version": "1.618033", "workers": 1}
 ```
 
-### `POST /v1/db/reset`
+### `POST /v1/db/connect`
 
-The Config tab's **reset** button — for after a db configuration change
+The Config tab's **connect** button — for after a db configuration change
 (new host / user / password / database): reconnects with the saved config
-without a restart, creates the schema when it is missing, seeds an empty
-database from the existing files, and re-registers this fass as a worker.
-The UI shows the returned `detail` on its status line.
+without a restart (clearing a stale "down" backoff) and checks schema
+compatibility — the database's stored **major fass version** (the `meta`
+table; in `v1.618033.6638fa2` the `1.618033` part, the commit-sha part is
+the minor) must match this build's major number. An **empty** database is
+initialised (schema created and stamped, seeded from the existing files,
+this fass registered as a worker); a **compatible** database connects
+as-is and is never re-seeded; a **different** version is refused —
+nothing is migrated or touched automatically. The UI shows `detail` on
+its status line and pops the mismatch up.
+
+`status` is machine-readable: `"init"` (empty database initialised) |
+`"ok"` (connected, compatible) | `"old"` / `"newer"` (version mismatch,
+refused — `detail` carries "old db version, do manual migration" /
+"new db version, do manual migration") | `"no-conn"` (unreachable or
+file-only).
 
 ```json
-{"ok": true,
- "detail": "reconnected to ffmpeg_assisstant@fass-db:5432 as ffmpeg",
- "seeded": {"settings": 0, "runs": 0, "logs": 0}}
+{"ok": true, "status": "init",
+ "detail": "connected — initialised (schema up to date (v2)) (this worker: registered)",
+ "db_major_version": "1.618033", "major_version": "1.618033",
+ "seeded": {"settings": 13, "runs": 0, "logs": 0}}
 ```
 
-`seeded` is `null` when there was nothing to do (schema present and
-populated). When the database is down, all three return `ok: false` with
-the connection error in `detail`; when psycopg2 is not installed (file-only
-development runs) `check` / `reset` report
+`seeded` is `null` when the database already had data (a plain compatible
+connect — nothing re-seeded). When the database is down, all three return
+`ok: false` with the connection error in `detail`; when psycopg2 is not
+installed (file-only development runs) `check` / `connect` report
 `"psycopg2 not installed (file-only mode)"`.
 
 ---
