@@ -133,7 +133,10 @@ The workhorse: a natural-language request in, a validated command out.
   Stream URLs (`rtmp://`, …) are never resolved, and `-` is the
   null-muxer diagnostic output (the run log notes it).
 - **Watermark image** — a logo file; further logos go in as extra image
-  inputs.
+  inputs. The field **refuses anything that is not an image** (`.png`
+  `.jpg` `.jpeg` `.webp` `.gif` `.bmp`): a video/audio name typed or
+  pasted in is cleared out with the refusal shown under the field, and
+  the server answers the same way for API clients.
 - **Adapter** — `auto` (the LLM only when a provider is configured and
   reachable — a configured-but-unreachable LLM falls back to the rules
   with a warning, never a dead end; an explicit `llm` with the LLM down
@@ -152,8 +155,8 @@ The workhorse: a natural-language request in, a validated command out.
   both on — and are **recorded in the run record** when the run starts
   and **restored from the newest run at page boot**: from the second run
   on, the pane shows the state the last run went out with (server-side,
-  so the state is the same on every client). Clear returns them to the
-  default, not to off.
+  so the state is the same on every client). **Clear** does not touch
+  them.
 - **Generate** — runs the pipeline; the result pane renders per status:
   - **ready** (green) — an editable **Command** textarea with a copy
     button, the **argument array** (shell-safe JSON), **What it does**,
@@ -221,7 +224,11 @@ The workhorse: a natural-language request in, a validated command out.
     order. **Clear**, the ✕ on the batch banner, or a fresh
     single-file generation disarms the batch; *Enter* and *Mediainfo*
     are disabled while a pattern stands in the Input field.
-- **Clear** — resets the whole pane.
+- **Clear** — clears only the **generated** part: the command card with
+  all its messages (WHAT IT DOES, defaults, warnings, validation), the
+  batch banner, and the preset-save state. The Instruction, Input /
+  Output, watermark, adapter, extra inputs and option checkboxes keep
+  their values — a second try of generation runs with the same files.
 
 ### Preflight
 

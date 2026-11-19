@@ -225,7 +225,7 @@ Body fields:
 | field | meaning |
 |---|---|
 | `instruction` | the natural-language request (1–4000 chars) |
-| `assets` | asset id → path or stream URL (`http(s)://`, `rtmp(s)://`, `rtsp(s)://`, `srt://`, `rist://`, `udp://`, `rtp://`, `tcp://`); may be a string or `{"path": …, "kind": …}` (kind needed for extensionless stream URLs); `-i <file>` values name files of the input folder. **Must include `main`** (the input video). For quality comparisons `main` is the reference and the distorted clip is auto-detected in the output folder (bind `distorted` to name it explicitly) |
+| `assets` | asset id → path or stream URL (`http(s)://`, `rtmp(s)://`, `rtsp(s)://`, `srt://`, `rist://`, `udp://`, `rtp://`, `tcp://`); may be a string or `{"path": …, "kind": …}` (kind needed for extensionless stream URLs); `-i <file>` values name files of the input folder. **Must include `main`** (the input video). `watermark` must name an **image** (`.png` `.jpg` `.jpeg` `.webp` `.gif` `.bmp`) — any other kind is a `422`. For quality comparisons `main` is the reference and the distorted clip is auto-detected in the output folder (bind `distorted` to name it explicitly) |
 | `output_filename` | output filename, or a stream URL to send the output to; `/input/…` writes into the input folder (chained processing); a relative name with `/` is an output subfolder |
 | `adapter` | `auto` (default) / `rules` / `llm` |
 | `preflight` | `true` = also run the preflight check after generation |
