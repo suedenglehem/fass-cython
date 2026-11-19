@@ -41,34 +41,40 @@ environment-based, see [Execution](#execution).
 The compose file is generic: the host folders come from **`docker/.env`**
 (compose interpolates `${FASS_INPUT_DIR}` etc.; defaults are
 repo-relative), the host ports from the install-time answers
-(`FASS_UI_PORT`, `FASS_HTTP_PORT`), and everything else — the LLM
-endpoint, the GPU — is a `config.json` value the **Config tab** owns
-after first boot.
+(`FASS_UI_PORT`, `FASS_HTTP_PORT`), the bind address from
+`FASS_BIND`, and everything else — the LLM endpoint, the GPU — is a
+`config.json` value the **Config tab** owns after first boot.
 
 The published dist (fass-cython) ships **`setup.sh`** at the repo root:
 it asks for the input/output/log/config folders, the **web UI port**
 (default `8000`), the **http stream port** (the fass-http sidecar,
 default `8001` — `8080` is often taken by local LLM servers — see
-[HTTP streams](#http-streams-m136)), **whether the database stays the
-default** (the `fass-db` pgvector container from this compose file — a
-custom answer asks the db host, port, user name, password and database
-one by one, and the local `fass-db` service is then not started), and
-**whether fass will use an LLM at all**; when yes, for the LLM base URL
-(OpenAI-compatible endpoint), the API key (empty = not required) and
-the **model name**; on a re-run the existing install's ports and
-database values are the prompt defaults (nothing is silently reset);
-creates the folders; records them in `docker/.env` and the
-**`config.json` volumes section**; writes `FASS_UI_PORT` +
-`FASS_HTTP_PORT` and creates `<output>/http`; with python on the
-machine, `scripts/port_probe.py` checks both ports for availability and
-probes the LLM endpoint for reachability (without python no probing
-happens); when the database is the default, creates it **offline via
-`scripts/create-db.sh`** (see [Database](#database-default-service));
-then starts the stack. The LLM connection timeout is NOT asked — the
-image default is `10` s, tuned in the Config tab. Flags cover every
-question: `--yes --ui-port --http-port --no-llm --llm --api-key
---model --gpu-pin` (`--timeout` sets the non-asked LLM timeout, for
-non-interactive installs). `--remove` stops and removes the whole fass
+[HTTP streams](#http-streams-m136)), the **bind address** —
+`127.0.0.1` (local only, the default) or `0.0.0.0` (all interfaces; on
+`0.0.0.0` the final messages remind to set the API key in the Config
+tab after the install is done, and say which ports to open in the
+firewall — the web UI and the http player) — then **which GPU to use**
+(asked only when several cards are found), **whether the database stays
+the default** (the `fass-db` pgvector container from this compose file
+— a custom answer asks the db host, port, user name, password and
+database one by one, and the local `fass-db` service is then not
+started), and **whether fass will use an LLM at all**; when yes, for
+the LLM base URL (OpenAI-compatible endpoint), the API key (empty =
+not required) and the **model name**; on a re-run the existing
+install's ports, bind address and database values are the prompt
+defaults (nothing is silently reset); creates the folders; records them
+in `docker/.env` and the **`config.json` volumes section**; writes
+`FASS_UI_PORT` + `FASS_HTTP_PORT` + `FASS_BIND` and creates
+`<output>/http`; with python on the machine, `scripts/port_probe.py`
+checks both ports for availability and probes the LLM endpoint for
+reachability (without python no probing happens); when the database is
+the default, creates it **offline via `scripts/create-db.sh`** (see
+[Database](#database-default-service)); then starts the stack. The LLM
+connection timeout is NOT asked — the image default is `10` s, tuned in
+the Config tab. Flags cover every question: `--yes --ui-port
+--http-port --bind --no-llm --llm --api-key --model --gpu-pin`
+(`--timeout` sets the non-asked LLM timeout, for non-interactive
+installs). `--remove` stops and removes the whole fass
 stack — every fass container and the stack network — without touching
 the data: the database contents, config, media and images survive, and
 a re-run of `setup.sh` installs on the existing data (confirmed on a
@@ -208,6 +214,17 @@ behaves the same (the remote side's receiver runs first).
 
 - **enabled** — the deployment exposes an NVIDIA GPU (compose reserves the
   `nvidia` devices; for a partial list, set `device` to indices like `0,1`).
+- **install-time detection (setup.sh)** — setup.sh lists the cards with
+  `nvidia-smi -L`, and when the nvidia-smi binary is absent the python
+  `scripts/gpu_probe.py` reads `/proc/driver/nvidia/gpus` (the driver
+  exposes one directory per card even without the toolkit). With several
+  cards the interactive prompt offers them (default `0`); `--gpu-pin N`
+  picks one non-interactively, and an out-of-range pin is refused with
+  the detected cards listed. A non-zero pin exposes index 0 alongside it
+  (the NVENC workaround — see compose.yaml). The final messages explain
+  how to change the card later — `FASS_GPU_PIN` in `docker/.env`, then
+  `./scripts/web.sh restart` — and say so when no GPU was found
+  (CPU-only: GPU commands generate, execution refused).
 - When on, asking for the GPU in an instruction ("use the gpu", "nvenc",
   "on the nvidia card") selects `h264_nvenc` / `hevc_nvenc` for H.264/H.265.
   VP9 stays CPU-only; x264 speed presets and the `baseline` profile are

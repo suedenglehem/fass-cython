@@ -11,6 +11,9 @@
 #   ./setup.sh --config /srv/config             # move the config folder
 #   ./setup.sh --yes --ui-port 9000             # the web UI host port
 #   ./setup.sh --yes --http-port 9090           # the http stream sidecar port
+#   ./setup.sh --yes --bind 0.0.0.0             # serve on all interfaces
+#                                               # (the default 127.0.0.1 is
+#                                               # local only)
 #   ./setup.sh --yes --no-llm                   # fass without an LLM
 #   ./setup.sh --yes --llm http://192.168.0.9:8080 --api-key sk-... --model my-model
 #   ./setup.sh --yes --llm http://192.168.0.9:8080 --timeout 30
@@ -36,8 +39,12 @@
 # /output, /log (sources, results, run logs) and the config folder
 # (/config), asks for the web UI port (default 8000), the http stream
 # port (the fass-http sidecar serving HLS/DASH runs, default 8001 — 8080
-# is often taken by local LLM servers) and whether fass will use an LLM
-# at all; when yes, for the LLM base URL (OpenAI-compatible endpoint),
+# is often taken by local LLM servers), the bind address — 127.0.0.1
+# (local only, the default) or 0.0.0.0 (all interfaces; on 0.0.0.0 the
+# final messages remind to set the API key in the Config tab after the
+# install is done and which ports to open in the firewall) — and
+# whether fass will use an LLM at all; when yes, for the LLM base URL
+# (OpenAI-compatible endpoint),
 # the API key (empty = not required) and the model name. It then asks
 # for the database: the default is the fass-db pgvector container this
 # compose file starts; a custom answer asks for the db host, port, user
@@ -52,14 +59,20 @@
 # without python no probing happens and config.json is seeded by the
 # container entrypoint on first boot instead of by setup.sh.
 #
-# GPU: probes nvidia-smi. Without a GPU the deployment is CPU-only:
-# no device reservation is written at all and the container gets
-# FASS_GPU_PROBE=0, so GPU-involved ffmpeg commands are GENERATED
-# (argv/CLI) but REFUSED at execution (start_run raises 403) — see the
-# Execution section of docker/README.md. On a multi-GPU machine,
-# --gpu-pin N (default 0, = the single-GPU-host answer) picks the card
-# fass's ffmpeg encodes on; a non-zero pin also exposes index 0 to the
-# container (a required NVENC workaround — see compose.yaml).
+# GPU: probes nvidia-smi, and when the nvidia-smi binary is absent the
+# python scripts/gpu_probe.py lists the cards from /proc/driver/nvidia/gpus
+# (the nvidia kernel module exposes one directory per card even without
+# the toolkit). Without a GPU the deployment is CPU-only: no device
+# reservation is written at all and the container gets FASS_GPU_PROBE=0,
+# so GPU-involved ffmpeg commands are GENERATED (argv/CLI) but REFUSED at
+# execution (start_run raises 403) — see the Execution section of
+# docker/README.md — and the final messages say so. On a multi-GPU
+# machine the interactive prompt offers the found cards (default 0);
+# --gpu-pin N picks the card fass's ffmpeg encodes on; a non-zero pin also
+# exposes index 0 to the container (a required NVENC workaround — see
+# compose.yaml). When a GPU is found the final messages explain how to
+# change the card later (FASS_GPU_PIN in docker/.env +
+# ./scripts/web.sh restart).
 #
 # The folders are recorded in two places so they stay in sync:
 #   docker/.env            — compose reads it at every `up` (git-ignored,
@@ -122,7 +135,10 @@ LLM_TIMEOUT="10"
 TIMEOUT_SET=0
 HTTP_PORT=8001
 HTTP_PORT_SET=0
+BIND="127.0.0.1"
+BIND_SET=0
 GPU_PIN="${FASS_GPU_PIN:-0}"
+GPU_PIN_SET=0
 ASSUME=0
 UPGRADE=0
 REMOVE=0
@@ -138,9 +154,10 @@ while [[ $# -gt 0 ]]; do
     --ui-port) UI_PORT="$2"; UI_PORT_SET=1; shift 2 ;;
     --timeout) LLM_TIMEOUT="$2"; TIMEOUT_SET=1; shift 2 ;;
     --http-port) HTTP_PORT="$2"; HTTP_PORT_SET=1; shift 2 ;;
+    --bind)    BIND="$2"; BIND_SET=1; shift 2 ;;
     --model)   LLM_MODEL="$2"; shift 2 ;;
     --no-llm)  LLM_OFF=1; shift ;;
-    --gpu-pin)  GPU_PIN="$2"; shift 2 ;;
+    --gpu-pin)  GPU_PIN="$2"; GPU_PIN_SET=1; shift 2 ;;
     --upgrade) UPGRADE=1; shift ;;
     --remove)  REMOVE=1; shift ;;
     -y|--yes) ASSUME=1; shift ;;
@@ -225,13 +242,25 @@ for c in python3 python; do
   command -v "$c" >/dev/null 2>&1 && { PYBIN="$c"; break; }
 done
 
-# GPU probe: nvidia-smi listing GPUs (host driver + toolkit present)
-GPU=1
-if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L >/dev/null 2>&1; then
-  GPU=0
+# GPU probe — the card list, one line per card: "GPU <i>: <name> ...".
+# nvidia-smi -L when the toolkit binary is present and answers; otherwise
+# the python scripts/gpu_probe.py, which reads /proc/driver/nvidia/gpus
+# (the nvidia kernel module exposes one directory per card even without
+# the nvidia-smi binary). Without nvidia-smi AND without python the cards
+# cannot be listed — the install proceeds CPU-only.
+GPU=0; GPU_COUNT=0; GPU_LIST=""
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+  GPU_LIST="$(nvidia-smi -L)"
+elif [[ -n "$PYBIN" ]] && "$PYBIN" "$REPO/scripts/gpu_probe.py" >/dev/null 2>&1; then
+  GPU_LIST="$("$PYBIN" "$REPO/scripts/gpu_probe.py")"
+fi
+if [[ -n "$GPU_LIST" ]]; then
+  GPU_COUNT="$(printf '%s\n' "$GPU_LIST" | grep -c .)"
+  GPU=1
 fi
 
-# Which GPU fass's ffmpeg uses (host index, nvidia-smi -L order).
+# Which GPU fass's ffmpeg uses (host index, card-list order — nvidia-smi
+# and the python probe both list in PCI topology order).
 # Default 0 — correct on single-GPU hosts. The pin is recorded in
 # docker/.env (FASS_GPU_PIN); a non-zero pin N additionally needs index 0
 # exposed to the container (a container whose ONLY exposed device sits at
@@ -241,15 +270,34 @@ fi
 # position in the exposure list (verified 2026-11-06: exposure ["0","2"]
 # presents the host's GPU 2 as in-container GPU 1, and CVD=2 fails there):
 # ["0"] -> the pinned card is in-container 0, ["0","N"] -> it is 1.
-if [[ $GPU -eq 1 ]]; then
-  [[ "$GPU_PIN" =~ ^[0-9]+$ ]] && (( GPU_PIN <= 63 )) \
-    || { echo "gpu pin must be a whole index between 0 and 63 (got: $GPU_PIN)" >&2; exit 2; }
-  nvidia-smi -L | grep -q "^GPU $GPU_PIN:" \
-    || { echo "no GPU at index $GPU_PIN (nvidia-smi -L lists the available ones)" >&2; exit 2; }
-  if (( GPU_PIN > 0 )); then GPU_CVD=1; else GPU_CVD=0; fi
-else
-  GPU_CVD=0
+#
+# The pin arrives from three sources at three points: --gpu-pin (parsed
+# above), the docker/.env re-run inheritance just below, and the
+# interactive ask further down — so the range check and the GPU_CVD
+# computation are a function called after each merge (GPU_CVD depends
+# on the FINAL pin).
+gpu_check() {
+  if [[ $GPU -eq 1 ]]; then
+    if ! [[ "$GPU_PIN" =~ ^[0-9]+$ ]] || (( GPU_PIN >= GPU_COUNT )); then
+      { echo "gpu pin must be a whole index between 0 and $((GPU_COUNT - 1)) (got: $GPU_PIN) — the detected cards:" >&2
+        printf '%s\n' "$GPU_LIST" >&2
+      }
+      exit 2
+    fi
+    if (( GPU_PIN > 0 )); then GPU_CVD=1; else GPU_CVD=0; fi
+  else
+    GPU_CVD=0
+  fi
+}
+# A re-run in an installed dir keeps the card the install picked (an
+# explicit --gpu-pin overrides). Read HERE, before the first gpu_check:
+# a hand-edited out-of-range FASS_GPU_PIN then fails before the upgrade
+# detection below can have removed running containers.
+if [[ $GPU_PIN_SET -eq 0 && -f "$DIR/.env" ]]; then
+  ENV_GPU_PIN="$(sed -n 's/^FASS_GPU_PIN=//p' "$DIR/.env" | tail -1)"
+  [[ -n "$ENV_GPU_PIN" ]] && GPU_PIN="$ENV_GPU_PIN"
 fi
+gpu_check
 
 # --- existing fass install (upgrade detection) ------------------------------
 # The stack uses FIXED container names (the compose container_name values):
@@ -370,14 +418,17 @@ CFG_LLM_SET=0
 
 # A re-run must not silently move the ports of the existing install: the
 # ports it was started with (docker/.env) and the stream port the app
-# serves at (the config's base URL) become the defaults; an explicit
-# --ui-port/--http-port overrides both.
-ENV_UI_PORT=""; ENV_HTTP_PORT=""
+# serves at (the config's base URL) become the defaults, and so does the
+# bind address it was started with; an explicit --ui-port/--http-port/
+# --bind overrides them.
+ENV_UI_PORT=""; ENV_HTTP_PORT=""; ENV_BIND=""
 if [[ -f "$DIR/.env" ]]; then
   ENV_UI_PORT="$(sed -n 's/^FASS_UI_PORT=//p' "$DIR/.env" | tail -1)"
   ENV_HTTP_PORT="$(sed -n 's/^FASS_HTTP_PORT=//p' "$DIR/.env" | tail -1)"
+  ENV_BIND="$(sed -n 's/^FASS_BIND=//p' "$DIR/.env" | tail -1)"
 fi
 if [[ $UI_PORT_SET -eq 0 && -n "$ENV_UI_PORT" ]]; then UI_PORT="$ENV_UI_PORT"; fi
+if [[ $BIND_SET -eq 0 && -n "$ENV_BIND" ]]; then BIND="$ENV_BIND"; fi
 if [[ $HTTP_PORT_SET -eq 0 ]]; then
   if [[ "$CFG_HTTP_PORT" != "8001" ]]; then HTTP_PORT="$CFG_HTTP_PORT"
   elif [[ -n "$ENV_HTTP_PORT" ]]; then HTTP_PORT="$ENV_HTTP_PORT"; fi
@@ -409,6 +460,12 @@ if [[ $ASSUME -eq 0 ]]; then
   CONFIG="$(ask "config host folder" "$CONFIG")"
   UI_PORT="$(ask   "web UI port" "$UI_PORT")"
   HTTP_PORT="$(ask "http stream port (HLS/DASH sidecar)" "$HTTP_PORT")"
+  BIND="$(ask "serve fass on (0.0.0.0 = all interfaces, 127.0.0.1 = local only)" "$BIND")"
+  if (( GPU == 1 && GPU_COUNT > 1 && GPU_PIN_SET == 0 )); then
+    echo "found $GPU_COUNT GPUs:"
+    printf '%s\n' "$GPU_LIST" | sed 's/^/  /'
+    GPU_PIN="$(ask "GPU to use (index 0-$((GPU_COUNT - 1)))" "$GPU_PIN")"
+  fi
   if (( LLM_OFF )); then
     LLM_SET=0
   else
@@ -483,6 +540,10 @@ done
   || { echo "web UI port must be a number 1-65535: $UI_PORT" >&2; exit 2; }
 [[ "$UI_PORT" != "$HTTP_PORT" ]] \
   || { echo "the web UI port and the http stream port must be different (both $UI_PORT)" >&2; exit 2; }
+case "$BIND" in
+  127.0.0.1|0.0.0.0) ;;
+  *) echo "bind address must be 127.0.0.1 (local only) or 0.0.0.0 (all interfaces): $BIND" >&2; exit 2 ;;
+esac
 [[ "$DB_PORT" =~ ^[0-9]+$ ]] && [[ "$DB_PORT" -ge 1 && "$DB_PORT" -le 65535 ]] \
   || { echo "db port must be a number 1-65535: $DB_PORT" >&2; exit 2; }
 [[ -n "$DB_HOST" ]] || { echo "db host must not be empty" >&2; exit 2; }
@@ -607,6 +668,10 @@ elif (( DB_IS_DEFAULT )); then
 else
   echo "db     -> $DB_USER@$DB_HOST:$DB_PORT/$DB_NAME"
 fi
+# The interactive ask runs AFTER the first gpu_check above — re-check and
+# recompute GPU_CVD from the FINAL pin before the summary, docker/.env and
+# the device overlay consume it.
+gpu_check
 echo "gpu    -> $([[ $GPU -eq 1 ]] && echo present || echo 'NOT FOUND (CPU-only: GPU commands generate, execution refused)')"
 mkdir -p "$INPUT" "$OUTPUT" "$LOG" "$CONFIG" "$OUTPUT/http"
 
@@ -621,6 +686,7 @@ FASS_GPU_PIN=$GPU_PIN
 FASS_GPU_CVD=$GPU_CVD
 FASS_UI_PORT=$UI_PORT
 FASS_HTTP_PORT=$HTTP_PORT
+FASS_BIND=$BIND
 EOF
 echo "wrote $DIR/.env"
 
@@ -805,6 +871,16 @@ fi
 for i in $(seq 1 90); do
   if curl -sf -m 3 "http://127.0.0.1:$UI_PORT/healthz" >/dev/null 2>&1; then
     echo "web ui is served on: 'http://127.0.0.1:$UI_PORT'"
+    if [[ "$BIND" == "0.0.0.0" ]]; then
+      echo "fass is served on 0.0.0.0 (reachable from the network) — it is better to set the API key in the Config tab (API/MCP section) after the install is done, so the /v1/* API is not open to everyone on your network"
+      echo "open these ports in your firewall (TCP): $UI_PORT (the fass web UI) and $HTTP_PORT (the http player — the HLS/DASH streams)"
+    fi
+    if (( GPU == 1 )); then
+      CARD="$(printf '%s\n' "$GPU_LIST" | grep "^GPU $GPU_PIN:" | head -1 | sed 's/^GPU [0-9]*: //')"
+      echo "gpu    -> fass encodes on GPU $GPU_PIN ($CARD) — to use another card, change FASS_GPU_PIN in docker/.env (e.g. FASS_GPU_PIN=1) and run './scripts/web.sh restart'"
+    else
+      echo "gpu    -> no NVIDIA GPU was detected — fass runs CPU-only (GPU commands are generated but refused at execution)"
+    fi
     echo "use './scripts/web.sh start|pull|restart|stop|status|logs' if you don't install fass as service"
     exit 0
   fi

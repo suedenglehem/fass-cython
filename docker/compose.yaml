@@ -41,7 +41,10 @@ services:
     image: boris271142/fass:latest
     container_name: fass
     ports:
-      - "${FASS_UI_PORT:-8000}:8000"
+      # FASS_BIND (docker/.env): 127.0.0.1 (the default — local only) or
+      # 0.0.0.0 (all interfaces — the firewall + API key then matter, see
+      # the README's Install section).
+      - "${FASS_BIND:-127.0.0.1}:${FASS_UI_PORT:-8000}:8000"
       # --- stream ports: "host:container/proto", one per Config-tab mapping.
       # Receive (camera in):  the camera pushes to <this host's IP>:5000
       #   and the command uses udp://host:5000
@@ -176,7 +179,7 @@ services:
     # explicitly via httpd's -c directive (httpd-foreground = httpd -DFOREGROUND).
     command: ["httpd-foreground", "-c", "Include conf/extra/httpd-fass.conf"]
     ports:
-      - "${FASS_HTTP_PORT:-8001}:80"
+      - "${FASS_BIND:-127.0.0.1}:${FASS_HTTP_PORT:-8001}:80"
     volumes:
       - ${FASS_OUTPUT_DIR:-../media/output}:/usr/local/apache2/htdocs:ro
       # Player-tab headers (CORS on stream files, no-cache on playlists):
