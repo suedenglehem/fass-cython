@@ -40,6 +40,16 @@ services:
   fass:
     image: boris271142/fass:latest
     container_name: fass
+    # File ownership (FASS_UID / FASS_GID / FASS_DOCKER_GID are written to
+    # docker/.env by ../setup.sh): the container writes /output /log /scores
+    # /config AS THE INSTALL USER, so every leftover an uninstall leaves is
+    # plain-rm-able — no sudo. Unset = "0:0" = root (the legacy behavior).
+    # group_add carries the HOST docker-group gid so the docker.sock mount
+    # (the Config-tab Apply path) stays usable by that user.
+    # fass-http deliberately stays root (binds :80 in-container);
+    # fass-db runs postgres' own user, fass-rag is non-root by design.
+    user: "${FASS_UID:-0}:${FASS_GID:-0}"
+    group_add: ["${FASS_DOCKER_GID:-0}"]
     ports:
       # FASS_BIND (docker/.env): 127.0.0.1 (the default — local only) or
       # 0.0.0.0 (all interfaces — the firewall + API key then matter, see
@@ -140,6 +150,11 @@ services:
     # recreate itself — see docker/README.md). Same image, no GPU.
     image: boris271142/fass:latest
     container_name: fass-worker
+    # Same ownership model as the fass service (user: + host docker-group
+    # gid, both from docker/.env) — the worker writes the Apply outcome to
+    # /config and talks to docker.sock.
+    user: "${FASS_UID:-0}:${FASS_GID:-0}"
+    group_add: ["${FASS_DOCKER_GID:-0}"]
     command: ["worker", "--port", "8001"]
     volumes:
       - ${FASS_CONFIG_DIR:-../docker-data/config}:/config

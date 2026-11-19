@@ -18,6 +18,13 @@
 #   ./setup.sh --yes --llm http://192.168.0.9:8080 --api-key sk-... --model my-model
 #   ./setup.sh --yes --llm http://192.168.0.9:8080 --timeout 30
 #   ./setup.sh --yes --gpu-pin 1                # fass's ffmpeg on GPU 1
+#   ./setup.sh --yes --scores /srv/scores       # the quality-scores folder
+# Ownership: fass + fass-worker run as the setup user (FASS_UID/FASS_GID ->
+# compose user:), so run logs/config/streams in the bind folders are yours
+# to delete without sudo (override: FASS_UID=... FASS_GID=... ./setup.sh;
+# plain root shell = legacy root-owned files). Migrating an existing
+# root-owned install: sudo ./setup.sh --upgrade — under sudo, setup adopts
+# the sudo'ing user (SUDO_UID) and chowns the folders to it.
 #   ./setup.sh --upgrade                        # an older fass install is on
 #                                               # the machine: remove its
 #                                               # containers instead of asking
@@ -125,6 +132,23 @@ INPUT="${FASS_INPUT_DIR:-$REPO/media/input}"
 OUTPUT="${FASS_OUTPUT_DIR:-$REPO/media/output}"
 LOG="${FASS_LOG_DIR:-$REPO/media/log}"
 CONFIG="${FASS_CONFIG_DIR:-$REPO/docker-data/config}"
+SCORES="${FASS_SCORES_DIR:-$REPO/media/scores}"
+# File ownership (task #56): fass + fass-worker run as this uid:gid via the
+# compose `user:`, so every run log / config / stream file they create in
+# the bind folders is the INSTALL USER's — an uninstall is a plain rm, no
+# sudo (root-run install keeps the legacy root-owned behavior). The host
+# docker-group gid goes to compose `group_add:` so the docker.sock mount
+# (Config-tab Apply) stays usable by that user. Precedence:
+# FASS_UID/FASS_GID/FASS_DOCKER_GID env > docker/.env from a previous run >
+# id -u / id -g / the docker group (or the docker.sock gid) detected now.
+# SUDO_UID/SUDO_GID: running setup.sh with sudo (the documented migration
+# path for a pre-existing root-owned install — a plain user CANNOT chown
+# root leftovers) runs the containers as the sudo'ing user, not as root.
+RUN_UID="${FASS_UID:-${SUDO_UID:-$(id -u)}}";  RUN_UID_SET=0; [[ -n "${FASS_UID:-}" ]] && RUN_UID_SET=1
+RUN_GID="${FASS_GID:-${SUDO_GID:-$(id -g)}}";  RUN_GID_SET=0; [[ -n "${FASS_GID:-}" ]] && RUN_GID_SET=1
+DOCKER_GID="${FASS_DOCKER_GID:-$(getent group docker 2>/dev/null | cut -d: -f3)}"
+DOCKER_GID_SET=0; [[ -n "${FASS_DOCKER_GID:-}" ]] && DOCKER_GID_SET=1
+[[ -n "$DOCKER_GID" ]] || DOCKER_GID="$(stat -c %g /var/run/docker.sock 2>/dev/null || echo 0)"
 UI_PORT=8000
 UI_PORT_SET=0
 LLM_URL=""
@@ -149,6 +173,7 @@ while [[ $# -gt 0 ]]; do
     --output) OUTPUT="$2"; shift 2 ;;
     --log)    LOG="$2";    shift 2 ;;
     --config) CONFIG="$2"; shift 2 ;;
+    --scores) SCORES="$2"; shift 2 ;;
     --llm)    LLM_URL="$2"; shift 2 ;;
     --api-key) API_KEY="$2"; shift 2 ;;
     --ui-port) UI_PORT="$2"; UI_PORT_SET=1; shift 2 ;;
@@ -231,6 +256,7 @@ FREE_MB="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 canon() { realpath -m -- "$1"; }
 INPUT="$(canon "$INPUT")"; OUTPUT="$(canon "$OUTPUT")"
 LOG="$(canon "$LOG")";     CONFIG="$(canon "$CONFIG")"
+SCORES="$(canon "$SCORES")"
 
 # The python interpreter, if any — scripts/port_probe.py probes the ports
 # (bind test) and the LLM endpoint (connection), and the config.json
@@ -422,13 +448,21 @@ CFG_LLM_SET=0
 # bind address it was started with; an explicit --ui-port/--http-port/
 # --bind overrides them.
 ENV_UI_PORT=""; ENV_HTTP_PORT=""; ENV_BIND=""
+ENV_UID=""; ENV_GID=""; ENV_DOCKER_GID=""
 if [[ -f "$DIR/.env" ]]; then
   ENV_UI_PORT="$(sed -n 's/^FASS_UI_PORT=//p' "$DIR/.env" | tail -1)"
   ENV_HTTP_PORT="$(sed -n 's/^FASS_HTTP_PORT=//p' "$DIR/.env" | tail -1)"
   ENV_BIND="$(sed -n 's/^FASS_BIND=//p' "$DIR/.env" | tail -1)"
+  ENV_UID="$(sed -n 's/^FASS_UID=//p' "$DIR/.env" | tail -1)"
+  ENV_GID="$(sed -n 's/^FASS_GID=//p' "$DIR/.env" | tail -1)"
+  ENV_DOCKER_GID="$(sed -n 's/^FASS_DOCKER_GID=//p' "$DIR/.env" | tail -1)"
 fi
 if [[ $UI_PORT_SET -eq 0 && -n "$ENV_UI_PORT" ]]; then UI_PORT="$ENV_UI_PORT"; fi
 if [[ $BIND_SET -eq 0 && -n "$ENV_BIND" ]]; then BIND="$ENV_BIND"; fi
+# ownership re-runs inherit (explicit env var beats docker/.env beats detect)
+if [[ $RUN_UID_SET -eq 0 && "$ENV_UID" =~ ^[0-9]+$ ]]; then RUN_UID="$ENV_UID"; fi
+if [[ $RUN_GID_SET -eq 0 && "$ENV_GID" =~ ^[0-9]+$ ]]; then RUN_GID="$ENV_GID"; fi
+if [[ $DOCKER_GID_SET -eq 0 && "$ENV_DOCKER_GID" =~ ^[0-9]+$ ]]; then DOCKER_GID="$ENV_DOCKER_GID"; fi
 if [[ $HTTP_PORT_SET -eq 0 ]]; then
   if [[ "$CFG_HTTP_PORT" != "8001" ]]; then HTTP_PORT="$CFG_HTTP_PORT"
   elif [[ -n "$ENV_HTTP_PORT" ]]; then HTTP_PORT="$ENV_HTTP_PORT"; fi
@@ -673,7 +707,36 @@ fi
 # the device overlay consume it.
 gpu_check
 echo "gpu    -> $([[ $GPU -eq 1 ]] && echo present || echo 'NOT FOUND (CPU-only: GPU commands generate, execution refused)')"
-mkdir -p "$INPUT" "$OUTPUT" "$LOG" "$CONFIG" "$OUTPUT/http"
+echo "user   -> fass files created as $RUN_UID:$RUN_GID (docker group $DOCKER_GID)"
+if [[ "$RUN_UID" == "0" ]]; then
+  echo "note   -> setup runs as ROOT: the containers stay root and their files will be root-owned (uninstall needs sudo). For user-owned files run setup.sh as a regular user, or set FASS_UID/FASS_GID." >&2
+fi
+mkdir -p "$INPUT" "$OUTPUT" "$LOG" "$CONFIG" "$SCORES" "$OUTPUT/http"
+
+# Ownership seed (task #56): the containers write these folders as
+# FASS_UID:FASS_GID (compose user:), so make them writable now — including
+# root-owned leftovers from an older root-run install. -R only needs to
+# touch foreign-owned files (the rest are already yours). A plain user
+# CANNOT chown root files without sudo — so the fallback is the docker
+# daemon itself: any user who can run docker (the requirement setup.sh
+# checks up front) can run a one-shot ROOT helper container that chowns
+# the bind folders through their own mounts. sudo stays the last resort.
+if [[ "$RUN_UID" != "0" ]]; then
+  if ! chown -R "$RUN_UID:$RUN_GID" "$OUTPUT" "$LOG" "$CONFIG" "$SCORES" 2>/dev/null; then
+    echo "some files in output/log/config/scores are owned by other users — fixing them via a docker root helper container (no sudo needed)…"
+    OWN_OK=1
+    for d in "$OUTPUT" "$LOG" "$CONFIG" "$SCORES"; do
+      docker run --rm -u 0:0 -v "$d:$d" busybox:latest chown -R "$RUN_UID:$RUN_GID" "$d" 2>/dev/null || OWN_OK=0
+    done
+    if (( OWN_OK )); then
+      echo "leftover files in output/log/config/scores are now owned by $RUN_UID:$RUN_GID"
+    else
+      echo "warning: could not fix the ownership of output/log/config/scores — run:" >&2
+      echo "  docker run --rm -u 0:0 -v \"\$d:\$d\" busybox:latest chown -R $RUN_UID:$RUN_GID \"\$d\"   (for each of the folders)" >&2
+      echo "  # or, where sudo is available: sudo chown -R $RUN_UID:$RUN_GID \"$OUTPUT\" \"$LOG\" \"$CONFIG\" \"$SCORES\"" >&2
+    fi
+  fi
+fi
 
 # compose reads .env from the project dir (docker/) at every `up`
 cat > "$DIR/.env" <<EOF
@@ -687,6 +750,12 @@ FASS_GPU_CVD=$GPU_CVD
 FASS_UI_PORT=$UI_PORT
 FASS_HTTP_PORT=$HTTP_PORT
 FASS_BIND=$BIND
+# run fass + fass-worker as this user (compose user:); files they create in
+# the bind folders (run logs, config, streams) are plain-rm-able afterwards.
+# FASS_DOCKER_GID = host docker-group gid for the docker.sock mount.
+FASS_UID=$RUN_UID
+FASS_GID=$RUN_GID
+FASS_DOCKER_GID=$DOCKER_GID
 EOF
 echo "wrote $DIR/.env"
 

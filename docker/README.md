@@ -99,6 +99,45 @@ development checkout, `scripts/web.sh` in the published dist) — so paths
 changed in the UI survive rebuilds. `docker/.env` is machine-local
 (git-ignored); the compose file stays generic.
 
+### File ownership (no sudo)
+
+Everything the containers write — output files, run logs, job records
+(`/log/runs`), `config.json`, scores — is owned by **the user who ran
+`setup.sh`**, not by root. The mechanism: `setup.sh` records your
+`id -u`/`id -g` as **`FASS_UID`/`FASS_GID`** (and the host docker-group
+gid as `FASS_DOCKER_GID`) in `docker/.env`; the compose file runs the
+`fass` and `fass-worker` containers as that user (`user:` +
+`group_add:`, so the docker socket for the Apply button stays usable).
+Unset keys keep the legacy `0:0` (root). **No sudo is required
+anywhere in the install, and never any user or group administration**
+(no `useradd`, `groupadd`, `usermod`, no `/etc/group` edits): being
+able to run `docker` (the standing docker prerequisite) is all the
+privilege the ownership model needs — the root-side work, when it is
+ever needed, is done by the docker daemon, not by your account.
+`fass-http` stays root by design (it binds `:80` inside its container),
+`fass-db` runs postgres' own user, `fass-rag` is non-root in-image.
+
+Uninstall is therefore plain file removal: stop the stack
+(`setup.sh --remove`) and `rm -rf` the folders — nothing is root-owned
+and nothing waits for sudo. The one exception is postgres' own data
+directory (`docker-data/db`, owned by uid `999` like every postgres
+volume): leaving it is fine, or remove it with
+`docker run --rm -u 0:0 -v "$PWD/docker-data/db:/d" busybox:latest rm -rf /d`.
+
+**Migrating an install made before this change** (root-owned leftovers
+that a plain user cannot delete): re-run `./setup.sh --upgrade`. It
+chowns `output`/`log`/`config`/`scores` to you; where plain `chown`
+fails (this is exactly the no-sudo case) it falls back to a **docker
+root helper container** — `docker run --rm -u 0:0 -v "<dir>":"<dir>"
+busybox:latest chown -R UID:GID "<dir>"` per folder — which needs no
+sudo because the docker daemon itself is root. Your **input folder (the
+media library) is never chowned**. The same one-liners work by hand,
+and `sudo ./setup.sh --upgrade` also works where sudo is available:
+under sudo, setup adopts the sudo'ing user (`SUDO_UID`/`SUDO_GID`) and
+chowns directly. Override order: `FASS_UID`/`FASS_GID`/`FASS_DOCKER_GID`
+env vars > the values already in `docker/.env` > `SUDO_UID`/`SUDO_GID`
+> `id -u`/`id -g`/the docker group.
+
 ### Launcher (start / stop + GUI)
 
 `docker/launcher.sh` wraps the compose lifecycle and opens the web GUI:

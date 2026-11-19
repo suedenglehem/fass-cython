@@ -1267,6 +1267,16 @@ pick it up by bare name (chained processings). The Config tab's
 `fass-worker` sidecar (a container cannot recreate itself). Full details:
 [docker/README.md](docker/README.md).
 
+**File ownership (no sudo)** — in the published dist `setup.sh` records
+the installing user in `docker/.env` (`FASS_UID`/`FASS_GID`), and the
+`fass`/`fass-worker` containers run as that user: every file the
+install creates — streams, run logs, job records, `config.json`,
+scores — belongs to a plain user, so uninstall is plain `rm -rf`. The
+install needs **no sudo and no user/group administration ever**; if an
+older install left root-owned files, `./setup.sh --upgrade` re-owns
+them — through the docker daemon itself, still without sudo. Details:
+[docker/README.md — File ownership](docker/README.md#file-ownership-no-sudo).
+
 **Multicast input/output** — multicast does not cross the compose
 bridge's NATted ports, so for it fass runs in the **host network
 namespace** — the machine-local `docker/compose.local.yaml` overlay
