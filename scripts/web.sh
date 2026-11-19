@@ -18,7 +18,8 @@
 # compose up, so paths set in the UI survive restarts.
 #
 # Env overrides:
-#   FASS_GUI_URL  GUI to open (default http://127.0.0.1:8000)
+#   FASS_GUI_URL  GUI to open (default http://127.0.0.1:<FASS_UI_PORT>,
+#                 8000 when docker/.env has no FASS_UI_PORT)
 #   FASS_BROWSER  browser binary (default: first of google-chrome,
 #                 google-chrome-stable, chromium, chromium-browser)
 set -euo pipefail
@@ -32,7 +33,14 @@ COMPOSE=(docker compose -f "$DIR/compose.yaml")
 # reservation — the base file carries none, see its comment); no-GPU
 # machines get no file, i.e. no reservation. Include it whenever it exists.
 [[ -f "$DIR/compose.local.yaml" ]] && COMPOSE+=(-f "$DIR/compose.local.yaml")
-URL="${FASS_GUI_URL:-http://127.0.0.1:8000}"
+# The web UI host port: setup.sh writes FASS_UI_PORT to docker/.env
+# (compose publishes it as ${FASS_UI_PORT:-8000}:8000) — the health
+# check and the GUI link must use the same port.
+UI_PORT=""
+if [[ -f "$DIR/.env" ]]; then
+  UI_PORT="$(sed -n 's/^FASS_UI_PORT=//p' "$DIR/.env" | tail -1)"
+fi
+URL="${FASS_GUI_URL:-http://127.0.0.1:${UI_PORT:-8000}}"
 
 # config.json is the source of truth for the volume paths: the Config tab
 # writes it and Apply re-creates the container from it. Re-sync docker/.env
@@ -40,7 +48,10 @@ URL="${FASS_GUI_URL:-http://127.0.0.1:8000}"
 # (setup.sh creates .env; empty volume values leave it untouched).
 sync_env() {
   local envf="$DIR/.env" cfgdir json
-  cfgdir="$(sed -n 's/^FASS_CONFIG_DIR=//p' "$envf" 2>/dev/null | tail -1)"
+  cfgdir=""
+  if [[ -f "$envf" ]]; then
+    cfgdir="$(sed -n 's/^FASS_CONFIG_DIR=//p' "$envf" | tail -1)"
+  fi
   cfgdir="${cfgdir:-$REPO/docker-data/config}"
   json="$cfgdir/config.json"
   [[ -f "$json" ]] || return 0

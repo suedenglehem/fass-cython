@@ -36,23 +36,43 @@ only run it where you want fass to execute FFmpeg. A development checkout
 (`python -m fass serve` from the repo) never executes anything — the gate is
 environment-based, see [Execution](#execution).
 
-## Install (host folders are the only install-time question)
+## Install (folders, ports, and an optional LLM are the install-time questions)
 
 The compose file is generic: the host folders come from **`docker/.env`**
 (compose interpolates `${FASS_INPUT_DIR}` etc.; defaults are
-repo-relative), and everything else — the LLM endpoint, the ports, the
-GPU — is a `config.json` value the **Config tab** owns after first boot.
+repo-relative), the host ports from the install-time answers
+(`FASS_UI_PORT`, `FASS_HTTP_PORT`), and everything else — the LLM
+endpoint, the GPU — is a `config.json` value the **Config tab** owns
+after first boot.
 
 The published dist (fass-cython) ships **`setup.sh`** at the repo root:
-it asks for the input/output/log/config folders, the LLM endpoint
-(+ API key, timeout), the GPU pin, and the http stream port; creates the
-folders; records them in `docker/.env` and the **`config.json` volumes
-section**; writes `FASS_HTTP_PORT` (the fass-http sidecar's host port,
-default `8080` — see [HTTP streams](#http-streams-m136)) and creates
-`<output>/http`; creates the **database offline via
+it asks for the input/output/log/config folders, the **web UI port**
+(default `8000`), the **http stream port** (the fass-http sidecar,
+default `8001` — `8080` is often taken by local LLM servers — see
+[HTTP streams](#http-streams-m136)), **whether the database stays the
+default** (the `fass-db` pgvector container from this compose file — a
+custom answer asks the db host, port, user name, password and database
+one by one, and the local `fass-db` service is then not started), and
+**whether fass will use an LLM at all**; when yes, for the LLM base URL
+(OpenAI-compatible endpoint), the API key (empty = not required) and
+the **model name**; on a re-run the existing install's ports and
+database values are the prompt defaults (nothing is silently reset);
+creates the folders; records them in `docker/.env` and the
+**`config.json` volumes section**; writes `FASS_UI_PORT` +
+`FASS_HTTP_PORT` and creates `<output>/http`; with python on the
+machine, `scripts/port_probe.py` checks both ports for availability and
+probes the LLM endpoint for reachability (without python no probing
+happens); when the database is the default, creates it **offline via
 `scripts/create-db.sh`** (see [Database](#database-default-service));
-then starts the stack. Flags cover every question: `--yes --llm
---api-key --timeout --http-port --gpu-pin`.
+then starts the stack. The LLM connection timeout is NOT asked — the
+image default is `10` s, tuned in the Config tab. Flags cover every
+question: `--yes --ui-port --http-port --no-llm --llm --api-key
+--model --gpu-pin` (`--timeout` sets the non-asked LLM timeout, for
+non-interactive installs). `--remove` stops and removes the whole fass
+stack — every fass container and the stack network — without touching
+the data: the database contents, config, media and images survive, and
+a re-run of `setup.sh` installs on the existing data (confirmed on a
+tty; `--yes` skips the confirmation).
 
 In a development checkout (no `setup.sh`) the same install by hand:
 
@@ -62,7 +82,9 @@ docker compose -f docker/compose.yaml up -d   # paths from docker/.env;
                                               # first run builds fass:latest
 ```
 
-The LLM model is NOT asked — set it in the Config tab.
+Without `setup.sh` the compose defaults apply — web UI `8000`, http
+stream `8001` — and the LLM is the entrypoint seed, set in the Config
+tab.
 
 After install the **Config tab owns the paths**: Apply re-creates the
 container from `config.json`, and the launcher re-syncs `docker/.env`
@@ -76,8 +98,9 @@ changed in the UI survive rebuilds. `docker/.env` is machine-local
 `docker/launcher.sh` wraps the compose lifecycle and opens the web GUI:
 
 - `./launcher.sh start` — no-op if the stack is already healthy, else
-  `up -d` + wait for healthz, then fires Chrome at `http://127.0.0.1:8000`
-  (override with `FASS_GUI_URL` / `FASS_BROWSER`); over ssh (no graphical
+  `up -d` + wait for healthz, then fires Chrome at the web UI
+  (`http://127.0.0.1:<FASS_UI_PORT>` from `docker/.env`, default `8000`;
+  override with `FASS_GUI_URL` / `FASS_BROWSER`); over ssh (no graphical
   session — neither `DISPLAY` nor `WAYLAND_DISPLAY` set) it prints the URL
   instead.
 - `./launcher.sh rebuild` — `up -d --build` (fresh image) + GUI.
@@ -86,9 +109,9 @@ changed in the UI survive rebuilds. `docker/.env` is machine-local
 
 The entrypoint seeds `/config/config.json` on first start with deployment
 sensible defaults (OpenAI-compatible LLM at the docker bridge gateway
-`172.17.0.1:8080`, model `qwen3.8-27b` — the strata server on the host; GPU
-enabled; streaming enabled; empty volume mappings). Tune everything from the
-Config tab afterwards.
+`172.17.0.1:8080`, model `qwen3.8-27b`, timeout `10` s — the strata
+server on the host; GPU enabled; streaming enabled; empty volume
+mappings). Tune everything from the Config tab afterwards.
 
 > `docker/compose.yaml` hard-codes `docker-data/` under the repo path on this
 > machine — edit the four volume paths to your host layout before deploying
@@ -207,8 +230,9 @@ always available as fallback and needs nothing):
 - **timeout** — the LLM connection timeout in seconds (default `10`,
   range `1..300`): a hung provider fails the generation with
   `LLM provider unreachable: timed out` instead of blocking it.
-  `setup.sh` (the published dist) asks for it (`--timeout`); the Config
-  tab has the field.
+  `setup.sh` (the published dist) does NOT ask for it — the image
+  default is `10` s (`--timeout` exists for non-interactive installs);
+  the Config tab has the field.
 
   **strata on the host (the test setup):** provider `openai`, host
   `172.17.0.1`, port `8080`, api key *empty*, model `qwen3.8-27b`. Thinking models are handled: if the model exhausts
@@ -346,7 +370,11 @@ durations, the command used, the logs) and the worker registry.
 
 - **Defaults:** user `ffmpeg` / password `ffmpeg` / database
   `ffmpeg_assisstant`, host `fass-db` (compose DNS — the port is
-  **not** published; only fass talks to it). The Config tab's
+  **not** published; only fass talks to it). The dist's `setup.sh` asks
+  at install time whether the database stays the default; a custom
+  answer records those five values in `config.json` and does not start
+  the local `fass-db` service (the external database must exist — fass
+  applies the schema to it on first connect). The Config tab's
   **DB, settings and runs** section owns every connection value
   (host / port / user / password / database) — **connect** there
   reconnects after a configuration change and checks the database's
@@ -463,7 +491,8 @@ host mode the machine-local overlay `docker/compose.local.yaml` (merged
 with the GPU-reservation part when both apply) gains:
 
 - `fass: network_mode: host` — fass binds 8000 on the host directly (the
-  base `8000:8000` ports entry is discarded by docker with a warning)
+  base `${FASS_UI_PORT:-8000}:8000` ports entry is discarded by docker
+  with a warning)
 - `FASS_DOCKER_WORKER=127.0.0.1:8001` + `FASS_RAG_URL=http://127.0.0.1:8100`
   on fass (compose merges environment maps key-by-key over the base list
   entries)
@@ -519,10 +548,11 @@ up -d` brings it up together with fass (no profile, no overlay).
   served at `http://<host>:<port>/http/<run-id>/stream.m3u8` — the URL
   maps 1:1 onto the file, nothing is rewritten.
 - The sidecar's host port comes from `docker/.env`
-  (`FASS_HTTP_PORT`, default `8080` — fass owns `8000`, fass-rag stays
-  internal on `8100` and is not published). `setup.sh` (the published
-  dist) asks for it, writes it to `.env`, and creates the
-  `<output>/http/` folder.
+  (`FASS_HTTP_PORT`, default `8001` — `8080` is often taken by local
+  LLM servers; fass owns the web UI port, `FASS_UI_PORT`, default
+  `8000`; fass-rag stays internal on `8100` and is not published).
+  `setup.sh` (the published dist) asks for it, writes it to `.env`, and
+  creates the `<output>/http/` folder.
 - A run destined for http serving writes its playlist into a **per-run
   subdir** `{output}/http/<run-id>/`, and ffmpeg runs with that dir as
   its working directory so the segments land beside the playlist. The

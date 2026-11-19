@@ -41,7 +41,7 @@ services:
     image: boris271142/fass:latest
     container_name: fass
     ports:
-      - "8000:8000"
+      - "${FASS_UI_PORT:-8000}:8000"
       # --- stream ports: "host:container/proto", one per Config-tab mapping.
       # Receive (camera in):  the camera pushes to <this host's IP>:5000
       #   and the command uses udp://host:5000
@@ -167,7 +167,8 @@ services:
     # the file header). Read-only mount of the WHOLE output dir at the
     # htdocs root, so /http/<run-id>/x.m3u8 URLs map 1:1 onto the files.
     # Host port: the setup.sh prompt (FASS_HTTP_PORT in docker/.env),
-    # default 8080 — fass owns 8000.
+    # default 8001 — 8080 is often taken by local LLM servers; fass
+    # owns the web UI port (FASS_UI_PORT, default 8000).
     image: httpd:2.4-alpine
     container_name: fass-http
     # The stock httpd.conf includes NO conf/extra glob (its httpd-*.conf
@@ -175,7 +176,7 @@ services:
     # explicitly via httpd's -c directive (httpd-foreground = httpd -DFOREGROUND).
     command: ["httpd-foreground", "-c", "Include conf/extra/httpd-fass.conf"]
     ports:
-      - "${FASS_HTTP_PORT:-8080}:80"
+      - "${FASS_HTTP_PORT:-8001}:80"
     volumes:
       - ${FASS_OUTPUT_DIR:-../media/output}:/usr/local/apache2/htdocs:ro
       # Player-tab headers (CORS on stream files, no-cache on playlists):
