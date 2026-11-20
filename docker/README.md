@@ -202,7 +202,11 @@ volume/GPU changes only take effect on a container recreation — use
 
 ## The Config tab
 
-`GET/PUT /v1/config` behind the UI. The deployment-relevant sections
+`GET/PUT /v1/config` behind the UI. The UI always sends the full config;
+a manual/API PUT is a **patch** — keys it omits keep the stored value
+(nested sections merge, lists replace, `null` sets explicitly), so a
+partial edit can never reset the sections it did not mention.
+The deployment-relevant sections
 (the tab also carries Shaka player, RAG, API key and Appearance):
 
 The bottom of the tab prints the deployment's identity: the container's
