@@ -30,7 +30,10 @@
 #                                               # containers instead of asking
 #   ./setup.sh --remove                     # stop and remove the fass
 #                                           # stack (every container +
-#                                           # the network) — data is kept
+#                                           # the network) AND docker-data
+#                                           # (config + database) via a
+#                                           # docker root-helper — media
+#                                           # and images are kept
 #
 # Linux only: Windows and macOS are not supported — the deployment is a
 # Linux Docker stack with the NVIDIA runtime. setup.sh refuses to start
@@ -201,24 +204,44 @@ fi
 # and the http sidecar, the default fass-db and the stack network) plus
 # the leftover fixed-name fass containers of an older install from another
 # directory (the same collision rule as the upgrade detection below).
-# Only the containers go: the data (config, database contents, media),
-# the images and docker/.env are kept — re-run setup.sh to install on the
-# existing data. This runs BEFORE the RAM check on purpose: the stack
-# being removed is often what fills the memory. The removal is confirmed
-# on a tty; --yes skips the question; off a tty without --yes it refuses
-# (a destructive command must not run unconfirmed in a pipeline).
+# The containers AND the app's own state go (docker-data: config + the
+# database contents — the database files are owned by the postgres user
+# inside the container, so "keep the data" would leave a directory no
+# plain user can delete, the exact uninstall complaint this closes);
+# the media folders and the pulled images are kept. Removing docker-data
+# needs the same docker root-helper as the ownership migration (no host
+# sudo): the bind is the PARENT dir, so the mount point is never the
+# target ("Device or resource busy"). This runs BEFORE the RAM check on
+# purpose: the stack being removed is often what fills the memory. The
+# removal is confirmed on a tty; --yes skips the question; off a tty
+# without --yes it refuses (a destructive command never runs unconfirmed).
 if (( REMOVE )); then
+  # rm as the invoking user, falling back to a docker root-helper
+  # (binds the PARENT of the target, rm's the target from inside —
+  # removing a dir through its own bind mount dies on EBUSY).
+  rm_tree() {
+    local d="$1"
+    [[ -e "$d" ]] || return 0
+    if rm -rf "$d" 2>/dev/null && [[ ! -e "$d" ]]; then return 0; fi
+    if docker run --rm -u 0:0 -v "$(dirname "$d"):/rm_parent" \
+         busybox:latest rm -rf "/rm_parent/$(basename "$d")" 2>/dev/null \
+       && [[ ! -e "$d" ]]; then return 0; fi
+    echo "warning: could not remove $d — do it yourself (no host sudo needed):" >&2
+    echo "  docker run --rm -u 0:0 -v \"$(dirname "$d"):/rm_parent\" busybox:latest rm -rf \"/rm_parent/$(basename "$d")\"" >&2
+    return 1
+  }
   COMPOSE=(docker compose -f "$DIR/compose.yaml")
   [[ -f "$DIR/compose.local.yaml" ]] && COMPOSE+=(-f "$DIR/compose.local.yaml")
   if (( ASSUME )); then
     ans="y"
   elif [[ -t 0 ]]; then
     echo "this stops and removes the fass stack — every fass container (the app,"
-    echo "the worker, the RAG and the http sidecar, the default fass-db) and the"
-    echo "stack network. The data is NOT touched: the config, the database"
-    echo "contents, the media and the pulled images are kept — re-run setup.sh"
-    echo "to install on the existing data."
-    printf 'Remove the fass stack? [y/N]: '
+    echo "the worker, the RAG and the http sidecar, the default fass-db), the"
+    echo "stack network AND the app state in docker-data (the config and the"
+    echo "DATABASE CONTENTS — they are DESTROYED, and the database files could"
+    echo "otherwise not be deleted without root). The media folders and the"
+    echo "pulled images are kept; re-run setup.sh to install fresh."
+    printf 'Remove the fass stack and its docker-data? [y/N]: '
     read -r ans || ans="n"
   else
     echo "error: --remove outside a tty needs --yes to confirm the removal." >&2
@@ -228,7 +251,7 @@ if (( REMOVE )); then
     [yY]*) ;;
     *) echo "not removing anything — the fass stack was left untouched." >&2; exit 1 ;;
   esac
-  echo "removing the fass stack (containers + network — the data is kept)"
+  echo "removing the fass stack (containers + network + docker-data — media and images kept)"
   "${COMPOSE[@]}" down
   # compose covers only THIS directory's install: sweep the leftover
   # containers of an older install from another directory (it keeps the
@@ -239,7 +262,27 @@ if (( REMOVE )); then
     # shellcheck disable=SC2086
     docker rm -f $LEFT
   fi
-  echo "removed the fass stack — run setup.sh again to install (the data is kept)"
+  # The app state: the DB_DIR/CONFIG_DIR the install actually uses (a
+  # custom docker/.env can point them elsewhere; compose resolves them
+  # relative to $DIR, so a relative value gets the same base here).
+  # last-wins (compose semantics); tolerate CRLF, surrounding blanks and
+  # single/double quoted values (compose strips those)
+  _envv() { [[ -f "$DIR/.env" ]] && sed -n "s/^$1=//p" "$DIR/.env" | tail -1 \
+    | sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+          -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"; }
+  DBD="$(_envv FASS_DB_DIR || true)";     [[ -n "$DBD" ]] || DBD="$REPO/docker-data/db"
+  CFGD="$(_envv FASS_CONFIG_DIR || true)"; [[ -n "$CFGD" ]] || CFGD="$REPO/docker-data/config"
+  [[ "$DBD" = /* ]] || DBD="$DIR/$DBD"
+  [[ "$CFGD" = /* ]] || CFGD="$DIR/$CFGD"
+  RMFAIL=0
+  rm_tree "$DBD"  || RMFAIL=1   # postgres data: uid 999 — needs the root-helper
+  rm_tree "$CFGD" || RMFAIL=1   # usually user-owned: plain rm wins
+  if (( RMFAIL )); then
+    echo "containers removed, BUT the app state above could not be fully removed." >&2
+    exit 2
+  fi
+  echo "removed the fass stack (containers, network, docker-data) — media and images kept;"
+  echo "docker/.env kept — run setup.sh again to install fresh on it"
   exit 0
 fi
 

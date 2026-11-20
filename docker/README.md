@@ -75,10 +75,14 @@ the Config tab. Flags cover every question: `--yes --ui-port
 --http-port --bind --no-llm --llm --api-key --model --gpu-pin`
 (`--timeout` sets the non-asked LLM timeout, for non-interactive
 installs). `--remove` stops and removes the whole fass
-stack — every fass container and the stack network — without touching
-the data: the database contents, config, media and images survive, and
-a re-run of `setup.sh` installs on the existing data (confirmed on a
-tty; `--yes` skips the confirmation).
+stack — every fass container, the stack network **and the app state in
+`docker-data`** (the config and the database contents; the postgres
+files are owned by the container-side postgres user, so `--remove`
+removes them through a docker root-helper — that way an uninstall can
+never leave a directory a plain user cannot delete). The media folders
+and the pulled images survive, and a re-run of `setup.sh` installs
+fresh (confirmed on a tty — the question names what is destroyed;
+`--yes` skips the confirmation).
 
 In a development checkout (no `setup.sh`) the same install by hand:
 
@@ -117,12 +121,15 @@ ever needed, is done by the docker daemon, not by your account.
 `fass-http` stays root by design (it binds `:80` inside its container),
 `fass-db` runs postgres' own user, `fass-rag` is non-root in-image.
 
-Uninstall is therefore plain file removal: stop the stack
-(`setup.sh --remove`) and `rm -rf` the folders — nothing is root-owned
-and nothing waits for sudo. The one exception is postgres' own data
-directory (`docker-data/db`, owned by uid `999` like every postgres
-volume): leaving it is fine, or remove it with
-`docker run --rm -u 0:0 -v "$PWD/docker-data/db:/d" busybox:latest rm -rf /d`.
+Uninstall is therefore plain file removal: `setup.sh --remove` removes
+the containers, the network and `docker-data` (config + the postgres
+data — the uid-`999` database files included, deleted via the same
+docker root-helper, so nothing root-owned is left behind), and then
+`rm -rf` the remaining folders — nothing waits for sudo. Only if you
+skip or answer `n` to `--remove` do the folders stay; postgres' own
+data directory (`docker-data/db`, owned by uid `999` like every
+postgres volume) can then be removed with
+`docker run --rm -u 0:0 -v "$PWD/docker-data:/d" busybox:latest rm -rf /d/db`.
 
 **Migrating an install made before this change** (root-owned leftovers
 that a plain user cannot delete): re-run `./setup.sh --upgrade`. It
