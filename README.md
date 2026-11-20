@@ -237,7 +237,13 @@ row per check (ok / FAIL):
 
 - **`static`** — the default. The plan is validated against fass's own
   registry: every codec, container, operation, and filter in the
-  command exists in the supported set.
+  command exists in the supported set. The gate also refuses plans that
+  would **never stop**: an endlessly looped input (`-stream_loop -1`, or
+  an image-style `-loop` with any nonzero value) that nothing bounds —
+  no output `-t` / `-frames:v`, no `-t` in the looped input's own
+  region, no `-shortest` or in-graph bound (`overlay …:shortest=1`,
+  `amix …:duration=first`) with an input that can actually reach EOF —
+  since such a run would encode forever and fill the output volume.
 - **`preflight`** — the plan was additionally checked against the
   **FFmpeg binary that is actually installed** on this deployment.
   Availability is build-specific — the same `-c libx264` or `-f webm`
@@ -311,7 +317,10 @@ list), and **↻ refresh**:
 - status badges — **success** (green — with the total run time,
   `finished − started` wall clock, right under the word), **running**
   (amber; the table polls every 2.5 s while a run is in flight),
-  **failed** (red);
+  **failed** (red); one exception: a **stopped** play2 live job (the
+  Player-tab side-by-side stream) is not an error — it renders in
+  **blue** (light violet in the kitty theme); every other stopped run
+  stays red;
 - **output** — a link: http-served runs go to the **Player** tab,
   ordinary runs to the raw file;
 - **log** — the run's log inline; **stop** — kills a running command.
@@ -478,8 +487,11 @@ Sections, top to bottom:
   same block re-picks *which* GPU ffmpeg encodes on, any time after
   setup: it lists every card the container sees with index, name, UUID
   and free VRAM (`GET /v1/gpus`), and Save + **Apply** rewrite the
-  container's `CUDA_VISIBLE_DEVICES` — the knob for when NVENC runs out
-  of VRAM on a card your desktop has saturated. Which cards are
+  container's `CUDA_VISIBLE_DEVICES` (the **all (keep current pin)**
+  option rewrites nothing: it carries the already-running pin — e.g. the
+  install-time `FASS_GPU_CVD` — through, so an Apply never moves the
+  encode off its card) — the knob for when NVENC runs out of VRAM on a
+  card your desktop has saturated. Which cards are
   *visible* at all stays a deployment concern — the container gets
   **all** host GPUs by default, because a single-GPU presentation
   breaks NVENC (`OpenEncodeSessionEx failed: unsupported device (2)`);
@@ -1279,7 +1291,15 @@ pick it up by bare name (chained processings). The Config tab's
 the installing user in `docker/.env` (`FASS_UID`/`FASS_GID`), and the
 `fass`/`fass-worker` containers run as that user: every file the
 install creates — streams, run logs, job records, `config.json`,
-scores — belongs to a plain user, so uninstall is plain `rm -rf`. The
+scores — belongs to a plain user. Full uninstall is
+**`./setup.sh --remove`**: it stops and removes the whole stack — every
+fass container (app, worker, RAG + http sidecars, the default fass-db)
+and the stack network — and destroys the app state in `docker-data`
+(the config AND the database contents; the postgres-owned db files go
+through the same docker root-helper, no host sudo). Media folders and
+pulled images are kept; anything left is plain `rm -rf`. A tty confirms
+the removal; `--yes` skips the question, and off a tty `--remove`
+refuses without it (a destructive command never runs unconfirmed). The
 install needs **no sudo and no user/group administration ever**; if an
 older install left root-owned files, `./setup.sh --upgrade` re-owns
 them — through the docker daemon itself, still without sudo. Details:
