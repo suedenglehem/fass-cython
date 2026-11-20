@@ -267,7 +267,9 @@ behaves the same (the remote side's receiver runs first).
   that install-time reservation, see `FASS_GPU_PIN` below).
 - **device** — the *encode pin*: which visible card ffmpeg encodes on,
   written as `CUDA_VISIBLE_DEVICES` on the container by the next Apply
-  (`"all"` = un-pinned, CUDA uses the first visible card). Indices are
+  (`"all"` = keep the pin the container already runs with — e.g. the
+  install-time `FASS_GPU_CVD` — so an Apply never moves the encode card
+  by itself; nothing to keep stays un-pinned). Indices are
   the container-visible ones — the Config tab lists them
   (`GET /v1/gpus`); an Apply pinning an index the container cannot see
   is refused (422). Editing this line by hand is the manual re-pick:
@@ -408,7 +410,8 @@ in the image):
   background thread so the ack reaches the UI first;
 - the worker writes the outcome to `last-apply.json` in the shared
   `/config` volume; the UI reads it via `GET /v1/config/apply-result`
-  after fass is back;
+  after fass is back (a fresh Apply rewrites the file clean — an `error`
+  key appears only under a failed outcome);
 - the replacement keeps the old container's network, env, labels, and any
   unmanaged mounts (the socket itself); the four managed volumes, port
   mappings, restart policy and GPU reservation come from the saved config.

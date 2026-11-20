@@ -605,11 +605,22 @@ the same shape as `GET /v1/db/ping`).
 
 ### `PUT /v1/config`
 
-Persist a new config — send the **whole** `FassConfig` (GET it, change, send
-back). The next request uses it, no restart. 409 guards a changed volume dir.
-Changing the LLM block triggers the thinking-capability probe.
+Persist a config change — the body is a **patch**: keys you send are set,
+keys you omit **keep the stored value** (nested sections merge the same
+way; lists replace wholesale; `null` is an explicit set, e.g.
+`{"llm": {"port": null}}` un-configures the port). Sending the **whole**
+`FassConfig` (GET it, change, send back) is fine too — the UI does. A
+rejected body (unknown key, bad shape) never writes anything. The next
+request uses it, no restart. 409 guards a changed volume dir. Changing the
+LLM endpoint (provider/host/port/scheme/model/key) triggers the
+thinking-capability probe.
 
 ```sh
+# one-field edit — everything else is untouched
+curl -s -X PUT http://localhost:8000/v1/config \
+  -H 'content-type: application/json' \
+  -d '{"gpu": {"device": "1"}}'
+# or the full round-trip
 cfg=$(curl -s http://localhost:8000/v1/config | jq '.config')
 curl -s -X PUT http://localhost:8000/v1/config \
   -H 'content-type: application/json' \
@@ -622,17 +633,27 @@ Ask the fass-worker sidecar to **recreate this container** from the saved
 config (docker deployments only). The worker stops *this* container to run
 the swap — expect the connection to drop after the ack, then poll
 `/v1/config/apply-result`. 409 when the sidecar is not reachable
-(`FASS_DOCKER_WORKER`), 502 when it is.
+(`FASS_DOCKER_WORKER`), 502 when it is. Before the swap the saved
+`gpu.device` is checked against the GPUs this container can see: a pin
+outside that set is **422** (the replacement would come up unable to
+encode); when enumeration is unavailable the check fails open.
 
 ### `GET /v1/config/apply-result`
 
-The sidecar's last recorded apply state (404 before the first apply).
+The sidecar's last recorded apply state (404 before the first apply). A
+fresh Apply rewrites the state file CLEAN — the `error` key appears only
+under `status: "failed"` (the endpoint also withholds `error` under any
+other status, so a previous failure's text can never ride a later
+success).
 
 ### `POST /v1/config/llm-test`
 
 One-word completion against the LLM — tests the **saved** config, or the
 **unsaved** form values with `{"use_unsaved": true, "llm": {…}}` (the
-Config-tab button). 422 "LLM not configured" when the block is empty. The
+Config-tab button). 422 with the exact sentence "OpenAI-compatible LLM
+needs host, model and a port (with https, a blank port means 443)" when
+the openai block is incomplete — the Config tab answers that case with
+the blue sticky popup, nothing next to the button. The
 test doubles as the thinking-capability probe → also returns
 `thinking_supported` (`true` / `false` / `null` = undetected).
 
@@ -644,6 +665,21 @@ curl -s -X POST http://localhost:8000/v1/config/llm-test | jq '{ok, model, secon
 
 Live GPU diagnostics (`nvidia-smi -L` from the fass environment). `ok` /
 `detail` — always 200; `ok: false` is a finding, not a server error.
+
+### `GET /v1/gpus`
+
+The GPU re-select dropdown data: `devices` — every GPU **visible from the
+container** as `{index, name, uuid, mem_total_mib, mem_free_mib}`
+(`[]` on a CPU-only install or when nvidia-smi fails), `pin` — the current
+`CUDA_VISIBLE_DEVICES` (`"all"` = no pin is set in the environment),
+`gpu_enabled`. Save a
+selected `index` into `gpu.device` (PUT `/v1/config`) and Apply to move
+encoding onto it. `gpu.device` `"all"` KEEPS the pin the container
+already runs with — an Apply never moves the encode card by itself.
+
+```sh
+curl -s http://localhost:8000/v1/gpus | jq '.devices[] | [.index, .name, .mem_free_mib]'
+```
 
 ### `POST /v1/config/remote-test`
 
