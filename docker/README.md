@@ -71,10 +71,11 @@ reachability (without python no probing happens); when the database is
 the default, creates it **offline via `scripts/create-db.sh`** (see
 [Database](#database-default-service)); then starts the stack. The LLM
 connection timeout is NOT asked — the image default is `10` s, tuned in
-the Config tab. Flags cover every question: `--yes --ui-port
---http-port --bind --no-llm --llm --api-key --model --gpu-pin`
-(`--timeout` sets the non-asked LLM timeout, for non-interactive
-installs). `--remove` stops and removes the whole fass
+the Config tab. Flags cover every question: `--yes -y --ui-port
+--http-port --bind --no-llm --llm --api-key --model --gpu-pin
+--input --output --log --config --scores` (`--timeout` sets the
+non-asked LLM timeout, for non-interactive installs; `--help` prints
+worked examples of every flag). `--remove` stops and removes the whole fass
 stack — every fass container, the stack network **and the app state in
 `docker-data`** (the config and the database contents; the postgres
 files are owned by the container-side postgres user, so `--remove`
