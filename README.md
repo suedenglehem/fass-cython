@@ -885,7 +885,7 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
   volume, 502 probe or ffmpeg failure (a pinned `gpu` with no card
   names the missing GPU), 503 the output volume not mounted.
 
-The complete endpoint reference (all 53 routes, request fields,
+The complete endpoint reference (all 57 routes, request fields,
 responses and curl examples) is in [API.md](API.md).
 
 ## MCP — fass as a tool for agents
