@@ -431,7 +431,9 @@ Sections, top to bottom:
   probe: a model without thinking gets both tickers permanently
   disabled (until the model is switched again); undetected leaves them
   enabled. **Test LLM (unsaved values)** reports "ok — model X answered
-  in Ns: '…'" and re-runs the probe.
+  in Ns: '…" and re-runs the probe; an empty LLM block answers
+  with a blue popup (host, model and a port are needed) and leaves nothing
+  written next to the button.
 - **Streaming — port mappings (host port ↔ container port)** (an
   advanced option — visible with **show more** on) — the
   host-address rewrite for stream URLs: *the host in a URL → the docker

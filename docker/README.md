@@ -320,7 +320,10 @@ always available as fallback and needs nothing):
 
 **Test LLM** button: sends a one-word probe through the real request path
 (`POST /v1/config/llm-test`) and shows the reply + latency, using the values
-in the form (no need to save first).
+in the form (no need to save first). With no LLM configured (host/model/port
+left empty) it answers with a **blue popup** — "OpenAI-compatible LLM needs
+host, model and a port (with https, a blank port means 443)" — and leaves
+nothing written next to the button (rules-only is informational, not an error).
 
 ### API key and API/MCP switch
 
