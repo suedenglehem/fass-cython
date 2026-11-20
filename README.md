@@ -472,11 +472,17 @@ Sections, top to bottom:
   playable in the browser).
 - **GPU (NVIDIA)** (an advanced option — visible with **show more**
   on) — enable nvenc (H.265, and AV1 when the GPU can
-  encode it — H.264 stays on libx264). *Which* GPU ffmpeg uses is a
-  deployment concern, pinned in the compose file with
-  `CUDA_VISIBLE_DEVICES` — the container always gets **all** host GPUs,
-  because a single-GPU presentation breaks NVENC
-  (`OpenEncodeSessionEx failed: unsupported device (2)`). Card support:
+  encode it — H.264 stays on libx264). An **encode on** dropdown in the
+  same block re-picks *which* GPU ffmpeg encodes on, any time after
+  setup: it lists every card the container sees with index, name, UUID
+  and free VRAM (`GET /v1/gpus`), and Save + **Apply** rewrite the
+  container's `CUDA_VISIBLE_DEVICES` — the knob for when NVENC runs out
+  of VRAM on a card your desktop has saturated. Which cards are
+  *visible* at all stays a deployment concern — the container gets
+  **all** host GPUs by default, because a single-GPU presentation
+  breaks NVENC (`OpenEncodeSessionEx failed: unsupported device (2)`);
+  a partial reservation (`FASS_GPU_PIN`) is still the setup.sh story.
+  Card support:
   NVIDIA **Turing (sm_75) through Blackwell (sm_120)** — the full
   generation list is in [Docker deployment](#docker-deployment).
 - **RAG — documentation retrieval** — the service status: url, timeout,

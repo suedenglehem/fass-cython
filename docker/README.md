@@ -259,7 +259,15 @@ behaves the same (the remote side's receiver runs first).
 ### GPU
 
 - **enabled** — the deployment exposes an NVIDIA GPU (compose reserves the
-  `nvidia` devices; for a partial list, set `device` to indices like `0,1`).
+  `nvidia` devices — which host cards are VISIBLE from the container is
+  that install-time reservation, see `FASS_GPU_PIN` below).
+- **device** — the *encode pin*: which visible card ffmpeg encodes on,
+  written as `CUDA_VISIBLE_DEVICES` on the container by the next Apply
+  (`"all"` = un-pinned, CUDA uses the first visible card). Indices are
+  the container-visible ones — the Config tab lists them
+  (`GET /v1/gpus`); an Apply pinning an index the container cannot see
+  is refused (422). Editing this line by hand is the manual re-pick:
+  the same knob the **encode on** dropdown drives.
 - **install-time detection (setup.sh)** — setup.sh lists the cards with
   `nvidia-smi -L`, and when the nvidia-smi binary is absent the python
   `scripts/gpu_probe.py` reads `/proc/driver/nvidia/gpus` (the driver
@@ -268,9 +276,13 @@ behaves the same (the remote side's receiver runs first).
   picks one non-interactively, and an out-of-range pin is refused with
   the detected cards listed. A non-zero pin exposes index 0 alongside it
   (the NVENC workaround — see compose.yaml). The final messages explain
-  how to change the card later — `FASS_GPU_PIN` in `docker/.env`, then
-  `./scripts/web.sh restart` — and say so when no GPU was found
-  (CPU-only: GPU commands generate, execution refused).
+  how to change the card later — for a different set of *visible* cards,
+  `FASS_GPU_PIN` in `docker/.env` + `docker compose up -d` (host-side);
+  to move *encoding* between the visible cards, no host edit is needed —
+  the Config tab's **encode on** dropdown + Save + Apply rewrites
+  `CUDA_VISIBLE_DEVICES` inside the container (see the **device** field
+  above) — and say so when no GPU was found (CPU-only: GPU commands
+  generate, execution refused).
 - When on, asking for the GPU in an instruction ("use the gpu", "nvenc",
   "on the nvidia card") selects `h264_nvenc` / `hevc_nvenc` for H.264/H.265.
   VP9 stays CPU-only; x264 speed presets and the `baseline` profile are
@@ -333,8 +345,9 @@ Both off (the default) = the open API.
 ### Apply
 
 Recreates the fass container from the saved config so volume/port/GPU
-changes take effect, via the **fass-worker sidecar** (see Self-management
-below): the UI's POST is forwarded to `fass-worker:8001/swap`, which stops
+changes take effect (including the `gpu.device` encode pin — refused
+with 422 up front if it pins a card the container cannot see), via the
+**fass-worker sidecar** (see Self-management below): the UI's POST is forwarded to `fass-worker:8001/swap`, which stops
 the old container, creates and starts the replacement, and records the
 outcome in `last-apply.json` in the config volume. The UI expects the
 connection to drop for a few seconds (two containers cannot publish the
