@@ -13,6 +13,18 @@ deployment: host-folder mappings for `/input`, `/output`, `/log`,
 **execute** the generated FFmpeg commands (gated and validated — see
 [Execution](#execution)).
 
+The published image is **fully code-stripped**. `boris271142/fass:latest`
+is built in the public dist (`fass-cython`) from its Cython-compiled
+wheel: base release + compiled binary modules only — **no `.py` and no
+`.c` sources anywhere inside** (`find / -name "*.py" -path "*fass*" |
+wc -l` → `0`, likewise `.c` under `/work`). Entrypoint, commands and the
+reported version are identical to the pinned release. Rebuilding it (from
+the `fass-cython` repo root):
+
+```
+docker build -f docker/Dockerfile -t boris271142/fass:stripped .
+```
+
 ```
 host folder ──(volume)──▶ /input    source media
 host folder ──(volume)──▶ /output   run results (playable from the UI)

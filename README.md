@@ -1229,7 +1229,12 @@ Stop it with the ordinary `POST /v1/runs/{run_id}/stop`.
 ## Docker deployment
 
 fass packaged with FFmpeg 9.0 + NVIDIA hardware acceleration, in a single
-container. The image's FFmpeg (base `boris271142/ffmpeg-sm_75_120`, a
+container. The published image (`boris271142/fass:latest`) is **fully
+code-stripped**: it is built from the Cython-compiled wheel in the public
+dist (`fass-cython`) — the container ships the compiled binary modules
+only, with **zero `.py` and `.c` sources inside**, and behaves exactly
+like the release it is pinned to (same entrypoint, commands and version).
+The image's FFmpeg (base `boris271142/ffmpeg-sm_75_120`, a
 rebuild of `jrottenberg/ffmpeg` 9.0.2) is compiled with **CUDA compute
 compatibility 7.5** — the compute capability of NVIDIA's **Turing**
 generation: its CUDA filter stack (`scale_cuda`, `overlay_cuda`, the
