@@ -356,11 +356,30 @@ The http-served stream tree: every `.m3u8` (kind `hls`) and `.mpd` (kind
 `dash`) under the output volume's `http/` subdir, recursive, newest first.
 Each entry: `path` (output-relative), `url` (the `streaming.http_base_url`
 prefix — the fass-http sidecar mounts the whole output volume, so the URL is
-served as-is), `size`, `modified`, `live` (the owning run is still running /
-writing), plus the whole tree's `total_size` / `file_count`.
+served as-is; with an EMPTY base the URLs are built against THIS server's
+origin and answered by `GET /http/` below, the response then carrying
+`http_base_derived: true`), `size`, `modified`, `live` (the owning run is
+still running / writing), plus the whole tree's `total_size` / `file_count`.
 
 ```sh
 curl -s http://localhost:8000/v1/streams | jq '.streams[0]'
+```
+
+### `GET /http/{path}`
+
+The stream tree served by fass itself — the native (no-sidecar) stand-in
+for the fass-http Apache sidecar, answering the derived URLs above:
+`GET /http/<run-id>/master.m3u8` → `{output}/http/<run-id>/master.m3u8`.
+File responses only (404 for anything outside the `http/` tree — same
+traversal rule as purge), with `Range` honored (DASH seeking) and the
+sidecar's header contract: `Access-Control-Allow-Origin: *` on
+`.m3u8/.mpd/.ts/.m4s`, `Cache-Control: no-cache` on the growing
+`.m3u8/.mpd` playlists. Open like `/media` (the API key gate covers
+`/v1/*` only). With a sidecar base configured nothing points here, but
+the route still answers.
+
+```sh
+curl -s -i http://localhost:8000/http/<run-id>/master.m3u8 | sed -n '1,4p'
 ```
 
 ### `POST /v1/streams/purge`
@@ -652,8 +671,10 @@ One-word completion against the LLM — tests the **saved** config, or the
 **unsaved** form values with `{"use_unsaved": true, "llm": {…}}` (the
 Config-tab button). 422 with the exact sentence "OpenAI-compatible LLM
 needs host, model and a port (with https, a blank port means 443)" when
-the openai block is incomplete — the Config tab answers that case with
-the blue sticky popup, nothing next to the button. The
+the openai block is incomplete, suffixed " — missing: <fields>" naming
+the empty ones (the Config placeholders look like filled values) — the
+Config tab answers that case with the blue sticky popup, nothing next to
+the button. The
 test doubles as the thinking-capability probe → also returns
 `thinking_supported` (`true` / `false` / `null` = undetected).
 

@@ -18,10 +18,13 @@ instruction ──> NLU (rules | llm) ──> EditPlan (strict schema)
                 render_posix (shlex.join) — display/copy only
 ```
 
-**Linux only.** fass is a Linux deployment — the Docker stack uses the
-NVIDIA runtime for the GPU path — and **Windows and macOS are not
-supported**: there is no build for them, and the install script
-(`setup.sh`) refuses to run on anything but Linux.
+**Linux deployment, native Windows deployment.** The Docker stack (the
+primary deployment) uses the NVIDIA runtime for the GPU path and
+installs via `setup.sh` (Linux only). There is also a **native Windows
+10 deployment** — no Docker, no WSL — with bundled FFmpeg 9.1-full +
+TSDuck, set up by `windows\win-setup.ps1` and served by
+`windows\serve.ps1`; see [Windows deployment](#windows-deployment).
+macOS is not supported.
 
 ## Quick start
 
@@ -38,6 +41,10 @@ python3 -m venv .venv
 ./.venv/bin/python -m fass "replace the audio with song.mp3" clip.mp4 --asset song=song.mp3
 ./.venv/bin/python -m fass serve                  # web UI + JSON API on :8000
 ```
+
+On Windows, the two steps above are `windows\win-setup.ps1` (venv +
+install + bundled binaries) and `windows\serve.ps1` (the service) — see
+[Windows deployment](#windows-deployment).
 
 Every request returns one of four structured outcomes — `ready`,
 `needs_clarification`, `unsupported`, `error`. Ambiguity is a first-class
@@ -443,8 +450,11 @@ Sections, top to bottom:
   in Ns: '…" and re-runs the probe; an empty LLM block answers
   with a blue popup (host, model and a port are needed) and leaves nothing
   written next to the button.
-- **Streaming — port mappings (host port ↔ container port)** (an
-  advanced option — visible with **show more** on) — the
+- **Streaming — port mappings (host port ↔ container port)** (a
+  **docker-only** section — an advanced option, visible with **show
+  more** on, and **absent entirely on standalone deployments**: there is
+  no container to forward through and the host rewrite is a no-op; user
+  2026-11-26: "standalone doesn't use it") — the
   host-address rewrite for stream URLs: *the host in a URL → the docker
   host* (udp/rtp inputs bind 0.0.0.0 inside the container), the host
   address (docker bridge gateway, default 172.17.0.1), and per-port
@@ -532,8 +542,15 @@ Sections, top to bottom:
 
   ![Config tab (full-tab shot) — the API key section carries the API/MCP master ticker and the fass api key field](screenshots/Config.png)
 - **DB, settings and runs** (an advanced option — visible with **show
-  more** on) — the **PostgreSQL** mirror of the settings
-  and the whole Runs-tab history: **db ip / host** (default
+  more** on) — the database mirror of the settings
+  and the whole Runs-tab history. Two engines (2026-11-22): **db engine**
+  **`postgres`** — the docker deployment of record — or **`sqlite`**
+  (**the rule: a standalone / native deployment always uses sqlite3**,
+  `db.engine=sqlite` + a single file, `data/fass.db`; stdlib sqlite3 in
+  WAL mode, no server to run, the host/port/user/password fields are
+  unused — user 2026-11-26: "standalone must use sqlite3", `win-setup.ps1`
+  seeds exactly this). On **postgres** the section shows **db ip / host**
+  (default
   `fass-db` — the compose database service), **port** (5432),
   **user name** / **password** (both default `ffmpeg`), and
   **database name** (default `ffmpeg_assisstant`). **check
@@ -837,7 +854,8 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
 #      -f null -"
 
 # GPU — decode on the GPU; on a build with libvmaf_cuda (the CUDA libvmaf
-# rebuild) the VMAF computation itself runs on the GPU too
+# rebuild) the VMAF computation itself runs on the GPU too. Requires BOTH
+# Config-tab switches on (gpu.enabled + gpu.vmaf_gpu) — else refused:
 curl -s http://127.0.0.1:8000/v1/vmaf \
   -H 'content-type: application/json' -d '{
     "reference": "input.mp4",
@@ -861,12 +879,18 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
   scale/deinterlace, then `hwdownload` and libvmaf on the CPU),
   `"decode_accel"` (GPU decode only, all filters on the CPU) or `"none"`
   on a CPU run.
-- **Persistent "vmaf on gpu"** — the Config tab's GPU (NVIDIA) section
-  has a *vmaf on gpu* option (persisted in `config.json`). When it is
-  on, `mode: "auto"` jobs route to the GPU-scoring chain — as if
-  `"mode": "gpu"` had been sent; an explicit `"cpu"` or `"gpu"` always
-  passes through unchanged. Without the `libvmaf_cuda` filter the jobs
-  take the previous GPU paths and say so in `steps`.
+- **The GPU switches are a hard gate** (user 2026-11-26) — vmaf touches
+  the GPU only when **both** Config-tab switches are on: *GPU and nvenc
+  enabled* (`gpu.enabled`) **and** *compute vmaf using gpu*
+  (`gpu.vmaf_gpu`). A card merely being visible is **not** permission —
+  it may be busy with the LLM or a running encode. Either switch off:
+  `mode: "auto"` scores on the CPU (the `steps` say why), and a pinned
+  `"mode": "gpu"` fails with the switch named instead of silently
+  taking the card. Both on: `mode: "auto"` jobs route to the
+  GPU-scoring chain — as if `"mode": "gpu"` had been sent — and an
+  explicit `"cpu"` or `"gpu"` passes through. Without the
+  `libvmaf_cuda` filter the jobs take the previous GPU paths and say
+  so in `steps`.
 
 - **Transparency** — `command` is the exact ffmpeg command that produced
   the score and `steps` names every extra step taken (which file was
@@ -897,7 +921,7 @@ curl -s http://127.0.0.1:8000/v1/vmaf \
   volume, 502 probe or ffmpeg failure (a pinned `gpu` with no card
   names the missing GPU), 503 the output volume not mounted.
 
-The complete endpoint reference (all 57 routes, request fields,
+The complete endpoint reference (all 58 routes, request fields,
 responses and curl examples) is in [API.md](API.md).
 
 ## MCP — fass as a tool for agents
@@ -1178,18 +1202,32 @@ banding, deinterlace artifacts — while it is still happening.
   reference; the buffer is auto 2×) + AAC-LC 128 k/48 kHz, 2 s
   MPEG-TS segments in an **event** playlist (every segment is kept, so
   the Player can rewind through the whole comparison). A GPU
-  deployment (`gpu.enabled` and `h264_nvenc` in the build) takes the
-  GPU path — NVDEC decode, `yadif_cuda` / `scale_cuda` / `overlay_cuda`,
-  `h264_nvenc`; a CPU box (or a stale `gpu.enabled` without the
-  encoder) takes the CPU path — `bwdif` + `libx264` — and the run
-  notes it. Audio is the source clip's (the left one).
+  deployment takes the GPU path only when the FULL nvidia pipeline is
+  available (`gpu.enabled` + `h264_nvenc` + the CUDA filters
+  `yadif_cuda`/`scale_cuda`/`overlay_cuda` — an encoder alone is not
+  enough); anything else takes the CPU path — `bwdif` + `libx264` —
+  and the run notes it. Native Windows takes the GPU path when its
+  bundled ffmpeg carries the CUDA filters (the `fdk-cuda75-ptx` build
+  does, since 2026-11-26 — the endpoint probes the very ffmpeg on PATH
+  the .ps1 twins invoke, so pick and run can never diverge); an older
+  or foreign build falls back to the CPU twin with an honest note.
+  Audio is the source clip's (the
+  left one).
 - **The scripts own the presentation** — the pipeline and the encoding
-  are two bash scripts baked into the image
-  (`/opt/play2/sbs_hls_cpu.sh`, `/opt/play2/sbs_hls_nvidia.sh`); fass
-  only launches them with absolute paths and env (`LOOP=1`, plus
-  `VBIT` / `VBUF` from the bitrate field). Tweak titles, overlays or
-  the encode by editing the scripts in `tests/double_view/` and
-  rebuilding the image — fass never rewrites the pipeline.
+  are scripts, not code: two bash scripts baked into the image
+  (`/opt/play2/sbs_hls_cpu.sh`, `/opt/play2/sbs_hls_nvidia.sh`) plus
+  **PowerShell twins for native Windows** (`sbs_hls_cpu.ps1`,
+  `sbs_hls_nvidia.ps1` — the GPU one is a full CUDA filtergraph:
+  `hwupload_cuda` + `yadif_cuda` + `scale_cuda` + two `overlay_cuda` +
+  `h264_nvenc`), because bash cannot be assumed there (a user's box may
+  have no Git,
+  and the WSL `bash` in System32 runs scripts in a Linux that never
+  sees `H:\`). fass picks launcher + script per platform and only
+  hands them absolute paths and env (`LOOP=1`, plus `VBIT` / `VBUF`
+  from the bitrate field). Tweak titles, overlays or the encode by
+  editing the scripts in `tests/double_view/` (the .ps1 must keep the
+  .sh's pixel math and env contract) and rebuilding the image — fass
+  never rewrites the pipeline.
 - **It runs until stopped** — fass passes `LOOP=1` (`-stream_loop -1`
   on both inputs), so the comparison loops forever instead of dying
   after one pass; it is a live stream, not a file to finish.
@@ -1204,12 +1242,13 @@ banding, deinterlace artifacts — while it is still happening.
   in the Player tab's streams table while the run runs. On start the
   UI jumps to the Player tab and auto-plays once the first playlist
   lands.
-- **Stop** — the ordinary run stop: the bash script and its child
-  ffmpeg share one process group, so stopping the run kills both.
+- **Stop** — the ordinary run stop: the script and its child ffmpeg
+  share one process group (POSIX) / process tree (Windows), so
+  stopping the run kills both.
 - **Gates** — bare filenames in BOTH fields (the vmaf 1.0 gate); 404 a
   file missing from its volume, 422 a non-video name, 409 a second
   play2 while one already plays, 503 with execution disabled or the
-  script missing from the image.
+  script missing from the deployment.
 
 The API is `POST /v1/streams/play2` (bare names, like `/v1/vmaf`):
 
@@ -1396,6 +1435,107 @@ ffmpeg -re -f lavfi -i "testsrc2=size=1280x720:rate=30" \
   Enter mode (a stream destination fixes the container to mpegts,
   like every other live scheme). Cross-host, the port is plain UDP —
   expose it in the compose file.
+
+## Windows deployment
+
+fass runs **natively on Windows 10** — no Docker, no WSL. The Linux
+code paths are untouched (every Windows branch is `os.name == "nt"`
+guarded); the same test suite is green on both platforms.
+
+**Setup (one-time, idempotent, no admin rights):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\win-setup.ps1
+```
+
+Creates the venv, installs fass with `api+dev+db+storage` extras +
+`httpx` + `psutil`, creates the volume dirs, and **fetches the bundled
+binaries** (they are deliberately not committed — GitHub's 100 MB file
+limit): the **main FFmpeg binary** — the custom **`fdk-cuda75-ptx`
+dynamic build** from `suedenglehem/ffmpeg-sm_75_120-win10`
+(libfdk_aac + xHE-AAC, NVENC h264/hevc/av1, and since 2026-11-26 all
+11 **CUDA filters** — compute_75 PTX, driver-JIT'd across the
+sm_75…sm_120 range — libvmaf; the release tag is pinned and the zip is
+self-contained with its DLLs → `windows\ffmpeg-fdk-*\bin`) — with FFmpeg
+**9.1-full_build** from gyan.dev as the fallback (unpacked with your
+7-Zip, or a downloaded standalone `7zr.exe`), plus the latest **TSDuck
+Win64 portable** from GitHub. An existing `windows\ffmpeg-*` build is
+respected, never overwritten, and the PATH bootstrap prefers the fdk
+build when several sit side by side. The setup prints a capability
+probe: NVENC encoders, CUDA filters, libfdk_aac presence.
+
+**Serve:**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File windows\serve.ps1
+```
+
+Starts `fass serve` on :8000 hidden, pidfile + log in `%TEMP%`,
+`/healthz` probe, refuses foreign port holders, stops the previous
+instance by exact PID. Re-running it restarts. The bundled binaries are
+prepended to PATH for the server and every ffmpeg it spawns, so a
+machine-wide ffmpeg (e.g. Cygwin's) can never win the lookup
+(`FASS_NO_BUNDLED_PATH=1` opts out).
+
+**Persistence: SQLite.** A standalone deployment **always runs on
+sqlite3** (`db.engine=sqlite`, database `data/fass.db` — one file, WAL,
+no server; the same schema and the same fail-open semantics as the
+docker postgres). `win-setup.ps1` seeds exactly that; the Config tab's
+**DB** engine select shows it and hides the server/auth fields. Never
+point the native deployment at a PostgreSQL server — there is no
+`fass-db` container to be found (user 2026-11-26).
+
+**RAG, standalone.** The RAG service is `windows\rag-local.ps1` — the
+same compiled `rag.server` from the repo venv against the baked corpus,
+no Docker (`-Stop` stops it; `-Port` moves it). `win-setup.ps1` seeds
+`rag.enabled=true` + `url=http://127.0.0.1:8100`, so the RAG tab is
+live once the launcher runs.
+
+**Volumes:** `media\input` (files to process) and `media\output`
+(results) are the native stand-ins for the container's `/input` and
+`/output`; `serve.ps1` sets `FASS_INPUT_DIR`/`FASS_OUTPUT_DIR`
+(pre-set env wins). Native drive paths (`H:\videos\clip.mp4`) work as
+input/output names exactly like volume paths.
+
+**Player streams:** no fass-http sidecar — `serve.ps1`'s FastAPI server
+serves the stream tree itself at `http://<this host>:8000/http/...`
+(HLS/DASH with byte-range seeking). The seeded config leaves
+`streaming.http_base_url` empty, which is exactly that signal: the
+Player tab derives same-origin URLs. Set a base (the sidecar URL) to
+hand serving back to nginx, as on the Docker deployment.
+
+**GPU:** NVENC (h264/hevc/av1) and NVDEC run on any NVIDIA card with a
+current driver — nvidia-smi is read directly (no Docker GPU runtime).
+The GPU *filter* surface follows the active build's probe: since
+2026-11-26 the main fdk build (`fdk-cuda75-ptx`) ships the **full CUDA
+filter set** (`yadif_cuda`, `scale_cuda`, `overlay_cuda`, `pad_cuda`,
+`transpose_cuda`, … embedded as compute_75 PTX, driver-JIT'd forward on
+sm_75→Blackwell), so play2 and CUDA-filter plans run on the GPU
+natively; the gyan full_build fallback carries its own CUDA/Vulkan set
+(`scale_vulkan`, …). Plans degrade to CPU filters for whatever the
+probe does not see.
+
+**What differs from the Docker deployment:**
+
+- **No Docker control in the Config tab** — there is no container to
+  recreate, so Apply-to-container and the compose preview are dropped
+  (Save persists the config, that is all the native deployment needs).
+
+- **libfdk_aac comes from the main binary** — the custom static
+  fdk-cuda build (not a free Windows build: none carries it). On a
+  build *without* `libfdk_aac` the product's default AAC encoder falls
+  back to the native `aac` with a visible warning; asking for fdk
+  explicitly gets a named preflight warning instead of a silent
+  substitution — that fallback stays for any other dropped-in build.
+- **Kill semantics**: Ctrl+Break is delivered to the ffmpeg process
+  group — ffmpeg's console handler finalizes the output file, the
+  exact analogue of SIGTERM (an escalation via psutil/`taskkill /T /F`
+  follows if it ignores it).
+- **play2** (live SBS HLS) and the **docker self-swap** (Apply) are
+  disabled — they are container features; the endpoints answer a
+  graceful 503. Multicast probing degrades (no `ip` on Windows) —
+  the Config tab's Streaming indicator reports it.
+- Stream-host rewrite (the docker gateway placeholder) is a no-op.
 
 ## Safety
 
