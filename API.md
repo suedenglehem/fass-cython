@@ -136,7 +136,7 @@ rejected key is prefilled for correction. The player and media keep
 working regardless, since their routes are open.
 
 ```sh
-KEY='0123456789abcdef'   # ≥ 16 characters — yours, not this one
+KEY=<your-api-key>   # ≥ 16 characters — yours, not this one
 
 # a gated call
 curl -s http://localhost:8000/v1/streams \
